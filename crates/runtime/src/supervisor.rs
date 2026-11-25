@@ -171,6 +171,17 @@ impl ModelSupervisor {
     ) -> Result<LoadedModelInfo, SupervisorError> {
         let _guard = self.load_lock.lock().await;
 
+        if is_jit {
+            let mut map = self.instances.write().await;
+            if let Some(existing) = map.get_mut(&model_id) {
+                if matches!(existing.child.try_wait(), Ok(None)) {
+                    existing.last_used_at = Utc::now();
+                    return Ok(snapshot_instance(existing).await);
+                }
+                map.remove(&model_id);
+            }
+        }
+
         if !server_exe.is_file() {
             return Err(SupervisorError::RuntimeNotFound(
                 server_exe.to_string_lossy().into_owned(),
@@ -744,5 +755,111 @@ impl Drop for WindowsJobGuard {
         unsafe {
             let _ = CloseHandle(HANDLE(self.handle as *mut c_void));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn spawn_dummy_child() -> Child {
+        #[cfg(target_os = "windows")]
+        let mut cmd = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "ping", "-n", "10", "127.0.0.1"]);
+            c
+        };
+        #[cfg(not(target_os = "windows"))]
+        let mut cmd = {
+            let mut c = Command::new("sleep");
+            c.arg("10");
+            c
+        };
+        cmd.stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn dummy child")
+    }
+
+    #[tokio::test]
+    async fn concurrent_jit_load_reuses_existing_instance() {
+        let sup = Arc::new(ModelSupervisor::new());
+        let model_id = "qwen-concurrent-test".to_string();
+
+        // Hold load_lock while two concurrent JIT load_model calls queue behind it,
+        // simulating two parallel requests racing after a cold start / TTL eviction.
+        let guard = sup.load_lock.lock().await;
+
+        let sup1 = sup.clone();
+        let id1 = model_id.clone();
+        let t1 = tokio::spawn(async move {
+            sup1.load_model(
+                id1,
+                "Qwen Test".into(),
+                "rt-1".into(),
+                "b5200".into(),
+                &PathBuf::from("/nonexistent/llama-server"),
+                LoadConfig::new(PathBuf::from("model.gguf")),
+                None,
+                true,
+                true,
+            )
+            .await
+        });
+
+        let sup2 = sup.clone();
+        let id2 = model_id.clone();
+        let t2 = tokio::spawn(async move {
+            sup2.load_model(
+                id2,
+                "Qwen Test".into(),
+                "rt-1".into(),
+                "b5200".into(),
+                &PathBuf::from("/nonexistent/llama-server"),
+                LoadConfig::new(PathBuf::from("model.gguf")),
+                None,
+                true,
+                true,
+            )
+            .await
+        });
+
+        // Simulate the first loader finishing and registering the live child before releasing the lock.
+        let child = spawn_dummy_child();
+        let expected_pid = child.id();
+        let now = Utc::now();
+        sup.instances.write().await.insert(
+            model_id.clone(),
+            ManagedInstance {
+                model_id: model_id.clone(),
+                display_name: "Qwen Test".into(),
+                alias: None,
+                runtime_id: "rt-1".into(),
+                runtime_tag: "b5200".into(),
+                port: 43210,
+                pid: expected_pid,
+                is_jit: true,
+                loaded_at: now,
+                last_used_at: now,
+                active_requests: 0,
+                placement: Arc::new(RwLock::new(MemoryPlacementReport::default())),
+                load_config: LoadConfig::new(PathBuf::from("model.gguf")),
+                cli_args: vec![],
+                child,
+            },
+        );
+        drop(guard);
+
+        let (r1, r2) = tokio::join!(t1, t2);
+        let info1 = r1.unwrap().expect("first concurrent JIT call should reuse instance");
+        let info2 = r2.unwrap().expect("second concurrent JIT call should reuse instance");
+        assert_eq!(info1.port, 43210);
+        assert_eq!(info2.port, 43210);
+        assert_eq!(info1.pid, expected_pid);
+        assert_eq!(info2.pid, expected_pid);
+
+        sup.unload_all().await;
     }
 }

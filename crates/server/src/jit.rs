@@ -520,12 +520,18 @@ impl GatewayContext {
             let is_known_mmproj = all_locals
                 .iter()
                 .any(|m| m.mmproj_path.as_ref().is_some_and(|p| p == mm));
-            let in_allowed_root = mm.is_file()
-                && mm
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
-                && cfg_snap.models_dirs.iter().any(|root| mm.starts_with(root));
+            let in_allowed_root = std::fs::canonicalize(mm).is_ok_and(|canon| {
+                canon.is_file()
+                    && canon
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
+                    && cfg_snap.models_dirs.iter().any(|root| {
+                        std::fs::canonicalize(root)
+                            .map(|r| canon.starts_with(r))
+                            .unwrap_or(false)
+                    })
+            });
             if !is_paired && !is_known_mmproj && !in_allowed_root {
                 load_cfg.mmproj_path = local.mmproj_path.clone();
             }

@@ -114,16 +114,7 @@ impl LinkManager {
 
     /// Constant-time check used by `bibulm-server` to verify requests forwarded by the sidecar.
     pub fn verify_secret(&self, candidate: &str) -> bool {
-        let a = self.secret.as_bytes();
-        let b = candidate.as_bytes();
-        if a.len() != b.len() {
-            return false;
-        }
-        let mut diff = 0u8;
-        for (&x, &y) in a.iter().zip(b.iter()) {
-            diff |= x ^ y;
-        }
-        diff == 0
+        bibulm_core::secrets::constant_time_eq(self.secret.as_bytes(), candidate.as_bytes())
     }
 
     pub fn subscribe_status(&self) -> broadcast::Receiver<LinkStatus> {

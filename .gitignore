@@ -1,12 +1,12 @@
 # Rust / Cargo
 /target/
 **/*.rs.bk
-Cargo.lock
 
 # Frontend / Node / Tauri
 node_modules/
 ui/dist/
 ui/.vite/
+ui/tsconfig.tsbuildinfo
 src-tauri/target/
 src-tauri/gen/
 src-tauri/binaries/

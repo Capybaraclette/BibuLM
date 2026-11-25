@@ -144,9 +144,15 @@ pub async fn check_for_app_update(github_token: Option<&str>) -> Result<AppUpdat
 pub async fn download_and_install_update(
     app: &AppHandle,
     state: &AppState,
-    info: AppUpdateInfo,
+    _untrusted_info: AppUpdateInfo,
     github_token: Option<&str>,
 ) -> Result<(), String> {
+    // Re-fetch release metadata from GitHub instead of trusting the webview payload.
+    let info = check_for_app_update(github_token).await?;
+    if !info.update_available {
+        return Err("No newer official release is currently available.".to_string());
+    }
+
     let asset_url = info
         .asset_url
         .as_deref()
@@ -529,14 +535,15 @@ pub fn is_newer_version(current: &str, candidate: &str) -> bool {
 }
 
 pub fn is_trusted_github_download_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://") else {
-        return false;
-    };
-    let host = rest.split('/').next().unwrap_or("").to_ascii_lowercase();
-    matches!(
-        host.as_str(),
-        "github.com" | "objects.githubusercontent.com" | "release-assets.githubusercontent.com"
-    )
+    let lower = url.to_ascii_lowercase();
+    url.starts_with("https://github.com/Capybaraclette/bibulm/releases/download/")
+        && !lower.contains("..")
+        && !lower.contains("%2e")
+        && !lower.contains("%5c")
+        && !url.contains('\\')
+        && !url.contains('@')
+        && !url.contains('?')
+        && !url.contains('#')
 }
 
 fn sanitize_installer_filename(raw: &str) -> Result<String, String> {
@@ -588,6 +595,15 @@ mod tests {
         ));
         assert!(!is_trusted_github_download_url(
             "http://github.com/Capybaraclette/bibulm/releases/download/v0.3.0/setup.exe"
+        ));
+        assert!(!is_trusted_github_download_url(
+            "https://github.com/evil/repo/releases/download/v0.3.0/setup.exe"
+        ));
+        assert!(!is_trusted_github_download_url(
+            "https://github.com/Capybaraclette/bibulm/releases/download/../../evil/repo/releases/download/v1/setup.exe"
+        ));
+        assert!(!is_trusted_github_download_url(
+            "https://github.com/Capybaraclette/bibulm/releases/download/%2e%2e/evil/setup.exe"
         ));
         assert!(!is_trusted_github_download_url(
             "https://evil.example.com/setup.exe"

@@ -4,7 +4,7 @@ use crate::anthropic::{
 use crate::jit::GatewayContext;
 use crate::proxy::{openai_error, proxy_openai_post};
 use axum::Router;
-use axum::extract::{Request, State};
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -250,6 +250,7 @@ pub fn build_router(ctx: GatewayContext) -> Router {
             post(link_clear_completed_downloads_handler),
         )
         .route("/link/v1/logs", get(link_get_logs_handler))
+        .layer(DefaultBodyLimit::max(256 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), cors_middleware))
         .with_state(state)
@@ -726,12 +727,26 @@ async fn require_remote_manage(
 
 /// Only official `ggml-org/llama.cpp` release assets may be installed remotely.
 pub fn is_valid_llama_release_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
     url.starts_with("https://github.com/ggml-org/llama.cpp/releases/download/")
+        && !lower.contains("..")
+        && !lower.contains("%2e")
+        && !lower.contains("%5c")
+        && !url.contains('\\')
+        && !url.contains('@')
+        && !url.contains('?')
+        && !url.contains('#')
 }
 
 /// Only HuggingFace-hosted files may be downloaded remotely.
 pub fn is_valid_hf_download_url(url: &str) -> bool {
-    url.starts_with("https://huggingface.co/") || url.starts_with("https://hf.co/")
+    let lower = url.to_ascii_lowercase();
+    (url.starts_with("https://huggingface.co/") || url.starts_with("https://hf.co/"))
+        && !lower.contains("..")
+        && !lower.contains("%2e")
+        && !lower.contains("%5c")
+        && !url.contains('\\')
+        && !url.contains('@')
 }
 
 pub fn is_safe_single_filename(name: &str) -> bool {
@@ -1536,11 +1551,24 @@ mod tests {
         assert!(!is_valid_llama_release_url(
             "https://github.com/evil/llama.cpp/releases/download/b1/x.zip"
         ));
+        assert!(!is_valid_llama_release_url(
+            "https://github.com/ggml-org/llama.cpp/releases/download/../../../../pirate/repo/releases/download/b1/x.zip"
+        ));
+        assert!(!is_valid_llama_release_url(
+            "https://github.com/ggml-org/llama.cpp/releases/download/%2e%2e/pirate/x.zip"
+        ));
+        assert!(!is_valid_llama_release_url(
+            "https://github.com/ggml-org/llama.cpp/releases/download/%2E%2E/pirate/x.zip"
+        ));
+        assert!(!is_valid_llama_release_url(
+            "https://github.com/ggml-org/llama.cpp/releases/download/@evil.com/x.zip"
+        ));
         assert!(is_valid_hf_download_url(
             "https://huggingface.co/org/repo/resolve/main/m.gguf"
         ));
         assert!(!is_valid_hf_download_url("http://huggingface.co/org/repo/m.gguf"));
         assert!(!is_valid_hf_download_url("https://huggingface.co.evil.com/m.gguf"));
+        assert!(!is_valid_hf_download_url("https://huggingface.co@evil.com/m.gguf"));
 
         assert!(is_safe_single_filename("model-q4_k_m.gguf"));
         assert!(!is_safe_single_filename("../etc/passwd"));
