@@ -20,7 +20,7 @@ use bibulm_link::{
     RemoteModelSummary, RemoteRuntimeSummary, RemoteRuntimesResponse,
     RemoteSetActiveRuntimeRequest, RemoteUninstallRuntimeRequest, manager::effective_device_name,
 };
-use bibulm_models::DownloadJobState;
+use bibulm_models::{DownloadJobState, JobKind, JobStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -502,7 +502,7 @@ async fn link_info_handler(State(ctx): State<Arc<GatewayContext>>) -> Response {
         dl.list_jobs()
             .await
             .iter()
-            .filter(|j| matches!(j.status.as_str(), "queued" | "downloading" | "verifying"))
+            .filter(|j| j.status.is_active())
             .count()
     } else {
         0
@@ -881,7 +881,7 @@ async fn link_install_runtime_handler(
         .to_string_lossy()
         .into_owned();
     let already_installing = downloads.list_jobs().await.iter().any(|j| {
-        j.kind == "runtime" && j.status == "downloading" && j.dest_dir == target_dest_dir
+        j.kind == JobKind::Runtime && j.status == JobStatus::Downloading && j.dest_dir == target_dest_dir
     });
     if already_installing {
         return openai_error(
@@ -893,7 +893,7 @@ async fn link_install_runtime_handler(
     let job_id = format!("rt-{}", Uuid::new_v4());
     let base_job = DownloadJobState {
         id: job_id.clone(),
-        kind: "runtime".to_string(),
+        kind: JobKind::Runtime,
         title: format!("llama.cpp {} ({})", variant.tag, variant.backend),
         repo_id: Some("ggml-org/llama.cpp".to_string()),
         dest_dir: target_dest_dir,
@@ -903,7 +903,7 @@ async fn link_install_runtime_handler(
         downloaded_bytes: 0,
         speed_bytes_per_sec: 0.0,
         eta_seconds: None,
-        status: "downloading".to_string(),
+        status: JobStatus::Downloading,
         error: None,
         created_at: Utc::now().to_rfc3339(),
         completed_at: None,
@@ -955,7 +955,7 @@ async fn link_install_runtime_handler(
                 done.dest_dir = rec.install_dir.clone();
                 done.current_file = None;
                 done.downloaded_bytes = done.total_bytes;
-                done.status = "completed".to_string();
+                done.status = JobStatus::Completed;
                 done.completed_at = Some(Utc::now().to_rfc3339());
                 downloads.record_external_job(done).await;
                 {
@@ -980,7 +980,7 @@ async fn link_install_runtime_handler(
             Err(e) => {
                 let mut failed = base_job.clone();
                 failed.current_file = None;
-                failed.status = "failed".to_string();
+                failed.status = JobStatus::Failed;
                 failed.error = Some(e.to_string());
                 downloads.record_external_job(failed).await;
                 task_ctx

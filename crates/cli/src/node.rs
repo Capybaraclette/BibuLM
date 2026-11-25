@@ -3,7 +3,7 @@
 use bibulm_core::{AppSettings, Database, default_data_dir, legacy_data_dir};
 use bibulm_hardware::HardwareMonitor;
 use bibulm_link::LinkManager;
-use bibulm_models::DownloadManager;
+use bibulm_models::{DownloadManager, JobKind, JobStatus};
 use bibulm_runtime::{HardwareMatchContext, ModelSupervisor};
 use bibulm_server::{ApiGateway, GatewayContext, LinkHardwareSnapshot};
 use std::path::PathBuf;
@@ -199,13 +199,13 @@ impl HeadlessNode {
         let link = self.link.clone();
         tokio::spawn(async move {
             while let Ok(job) = rx.recv().await {
-                if job.status == "completed" && job.kind == "model" {
+                if job.status == JobStatus::Completed && job.kind == JobKind::Model {
                     gateway.invalidate_models_cache().await;
                     link.notify_peers_state_changed();
                     if announce {
                         println!("[download] completed: {}", job.title);
                     }
-                } else if job.status == "failed" && announce {
+                } else if job.status == JobStatus::Failed && announce {
                     println!(
                         "[download] failed: {} ({})",
                         job.title,

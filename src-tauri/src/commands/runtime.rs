@@ -5,7 +5,7 @@ use bibulm_core::{
     AppSettings, GuardrailLevel, InstalledRuntimeRecord, LoadConfig,
     estimate_memory_usage_with_context, parse_gguf_file,
 };
-use bibulm_models::DownloadJobState;
+use bibulm_models::{DownloadJobState, JobKind, JobStatus};
 use bibulm_runtime::{
     DiscoveredCliFlag, HardwareMatchContext, LlamaRelease, LlamaServerMetrics, LoadedModelInfo,
     RuntimeBackendVariant, ServerLogEntry, discover_runtime_cli_flags, fetch_llama_cpp_releases,
@@ -77,7 +77,7 @@ pub async fn install_runtime(
         move |prog| {
             let snap = DownloadJobState {
                 id: job_id_c.clone(),
-                kind: "runtime".to_string(),
+                kind: JobKind::Runtime,
                 title: title_c.clone(),
                 repo_id: Some("ggml-org/llama.cpp".to_string()),
                 dest_dir: dest_str.clone(),
@@ -87,7 +87,7 @@ pub async fn install_runtime(
                 downloaded_bytes: prog.downloaded_bytes,
                 speed_bytes_per_sec: 0.0,
                 eta_seconds: None,
-                status: "downloading".to_string(),
+                status: JobStatus::Downloading,
                 error: None,
                 created_at: created_c.clone(),
                 completed_at: None,
@@ -102,7 +102,7 @@ pub async fn install_runtime(
             downloads
                 .record_external_job(DownloadJobState {
                     id: job_id,
-                    kind: "runtime".to_string(),
+                    kind: JobKind::Runtime,
                     title,
                     repo_id: Some("ggml-org/llama.cpp".to_string()),
                     dest_dir: rec.install_dir.clone(),
@@ -112,7 +112,7 @@ pub async fn install_runtime(
                     downloaded_bytes: total_bytes,
                     speed_bytes_per_sec: 0.0,
                     eta_seconds: None,
-                    status: "completed".to_string(),
+                    status: JobStatus::Completed,
                     error: None,
                     created_at,
                     completed_at: Some(Utc::now().to_rfc3339()),
@@ -131,7 +131,7 @@ pub async fn install_runtime(
             downloads
                 .record_external_job(DownloadJobState {
                     id: job_id,
-                    kind: "runtime".to_string(),
+                    kind: JobKind::Runtime,
                     title,
                     repo_id: Some("ggml-org/llama.cpp".to_string()),
                     dest_dir: dest_dir.to_string_lossy().into_owned(),
@@ -141,7 +141,7 @@ pub async fn install_runtime(
                     downloaded_bytes: 0,
                     speed_bytes_per_sec: 0.0,
                     eta_seconds: None,
-                    status: "failed".to_string(),
+                    status: JobStatus::Failed,
                     error: Some(e.to_string()),
                     created_at,
                     completed_at: None,

@@ -5,7 +5,7 @@ use crate::node::{HeadlessNode, shutdown_signal};
 use anyhow::{Context, anyhow, bail};
 use bibulm_core::AppSettings;
 use bibulm_link::{LinkConnectionState, LinkStatus};
-use bibulm_models::{HfSortOrder, scan_local_models_with_external};
+use bibulm_models::{HfSortOrder, JobStatus, scan_local_models_with_external};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -402,7 +402,7 @@ pub async fn cmd_status(node: &HeadlessNode, json_out: bool) -> anyhow::Result<(
     }
     let active: Vec<_> = downloads
         .iter()
-        .filter(|d| matches!(d.status.as_str(), "queued" | "downloading" | "verifying" | "paused"))
+        .filter(|d| !d.status.is_finished())
         .collect();
     println!("downloads in progress: {}", active.len());
     println!("api tokens: {}", tokens.len());
@@ -682,7 +682,7 @@ pub async fn cmd_models(node: &HeadlessNode, cmd: ModelsCmd, json_out: bool) -> 
                         node.downloads.pause(&job.id).await;
                         let _ = tokio::time::timeout(Duration::from_secs(2), async {
                             while let Ok(j) = rx.recv().await {
-                                if j.id == job.id && j.status == "paused" {
+                                if j.id == job.id && j.status == JobStatus::Paused {
                                     break;
                                 }
                             }
@@ -694,14 +694,14 @@ pub async fn cmd_models(node: &HeadlessNode, cmd: ModelsCmd, json_out: bool) -> 
                     ev = rx.recv() => {
                         match ev {
                             Ok(j) if j.id == job.id => {
-                                match j.status.as_str() {
-                                    "completed" => {
+                                match j.status {
+                                    JobStatus::Completed => {
                                         eprintln!();
                                         println!("Done: {}", j.dest_dir);
                                         return Ok(());
                                     }
-                                    "failed" => bail!(j.error.unwrap_or_else(|| "download failed".into())),
-                                    "cancelled" => bail!("download cancelled"),
+                                    JobStatus::Failed => bail!(j.error.unwrap_or_else(|| "download failed".into())),
+                                    JobStatus::Cancelled => bail!("download cancelled"),
                                     _ => {
                                         if last_print.is_none_or(|t| t.elapsed() >= Duration::from_millis(500)) {
                                             last_print = Some(Instant::now());

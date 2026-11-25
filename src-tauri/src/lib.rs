@@ -363,7 +363,8 @@ pub fn run() {
                 let state = dl_handle.state::<AppState>();
                 let mut rx = state.downloads.subscribe();
                 while let Ok(job) = rx.recv().await {
-                    if job.status == "completed" && job.kind == "model" {
+                    if job.status == bibulm_models::JobStatus::Completed
+                        && job.kind == bibulm_models::JobKind::Model {
                         state.gateway.invalidate_models_cache().await;
                         state.link.notify_peers_state_changed();
                     }
