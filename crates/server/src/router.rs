@@ -4,14 +4,14 @@ use crate::anthropic::{
 use crate::jit::GatewayContext;
 use crate::proxy::{openai_error, proxy_openai_post};
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::extract::{DefaultBodyLimit, Extension, MatchedPath, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use bytes::Bytes;
 use chrono::Utc;
-use bibulm_core::ServerConfig;
+use bibulm_core::{AppSettings, ServerConfig};
 use bibulm_link::{
     LINK_SECRET_HEADER, PeerInfoPayload, RemoteActionResponse, RemoteDeleteModelRequest,
     RemoteDownloadActionRequest, RemoteDraftCandidate, RemoteInstallRuntimeRequest,
@@ -201,10 +201,10 @@ pub fn build_router(ctx: GatewayContext) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/v1/models", get(list_models_handler))
-        .route("/v1/chat/completions", post(chat_completions_handler))
-        .route("/v1/completions", post(completions_handler))
-        .route("/v1/embeddings", post(embeddings_handler))
-        .route("/v1/responses", post(responses_handler))
+        .route("/v1/chat/completions", post(openai_proxy_handler))
+        .route("/v1/completions", post(openai_proxy_handler))
+        .route("/v1/embeddings", post(openai_proxy_handler))
+        .route("/v1/responses", post(openai_proxy_handler))
         .route("/v1/messages", post(anthropic_messages_handler))
         .route("/v1/messages/count_tokens", post(anthropic_count_tokens_handler))
         // Internal BibuLM Link mesh endpoints (strictly gated by X-Link-Secret from sidecar)
@@ -213,47 +213,47 @@ pub fn build_router(ctx: GatewayContext) -> Router {
         .route("/link/v1/models/inspect", post(link_inspect_model_handler))
         .route("/link/v1/models/load", post(link_load_model_handler))
         .route("/link/v1/models/unload", post(link_unload_model_handler))
-        .route("/link/v1/runtimes", get(link_list_runtimes_handler))
-        .route(
-            "/link/v1/runtimes/releases",
-            get(link_fetch_runtime_releases_handler),
-        )
-        .route("/link/v1/runtimes/install", post(link_install_runtime_handler))
-        .route(
-            "/link/v1/runtimes/active",
-            post(link_set_active_runtime_handler),
-        )
-        .route(
-            "/link/v1/runtimes/uninstall",
-            post(link_uninstall_runtime_handler),
-        )
-        .route(
-            "/link/v1/models/download",
-            post(link_enqueue_model_download_handler),
-        )
-        .route("/link/v1/models/delete", post(link_delete_model_handler))
-        .route("/link/v1/downloads", get(link_list_downloads_handler))
-        .route(
-            "/link/v1/downloads/pause",
-            post(link_pause_download_handler),
-        )
-        .route(
-            "/link/v1/downloads/resume",
-            post(link_resume_download_handler),
-        )
-        .route(
-            "/link/v1/downloads/cancel",
-            post(link_cancel_download_handler),
-        )
-        .route(
-            "/link/v1/downloads/clear",
-            post(link_clear_completed_downloads_handler),
-        )
-        .route("/link/v1/logs", get(link_get_logs_handler))
+        .merge(remote_manage_routes(state.clone()))
         .layer(DefaultBodyLimit::max(256 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), cors_middleware))
         .with_state(state)
+}
+
+/// Remote runtime/model management routes, only reachable when this device allows it.
+fn remote_manage_routes(state: Arc<GatewayContext>) -> Router<Arc<GatewayContext>> {
+    Router::new()
+        .route("/link/v1/runtimes", get(link_list_runtimes_handler))
+        .route("/link/v1/runtimes/releases", get(link_fetch_runtime_releases_handler))
+        .route("/link/v1/runtimes/install", post(link_install_runtime_handler))
+        .route("/link/v1/runtimes/active", post(link_set_active_runtime_handler))
+        .route("/link/v1/runtimes/uninstall", post(link_uninstall_runtime_handler))
+        .route("/link/v1/models/download", post(link_enqueue_model_download_handler))
+        .route("/link/v1/models/delete", post(link_delete_model_handler))
+        .route("/link/v1/downloads", get(link_list_downloads_handler))
+        .route("/link/v1/downloads/pause", post(link_pause_download_handler))
+        .route("/link/v1/downloads/resume", post(link_resume_download_handler))
+        .route("/link/v1/downloads/cancel", post(link_cancel_download_handler))
+        .route("/link/v1/downloads/clear", post(link_clear_completed_downloads_handler))
+        .route("/link/v1/logs", get(link_get_logs_handler))
+        .route_layer(middleware::from_fn_with_state(state, remote_manage_middleware))
+}
+
+/// Rejects management calls unless enabled, and hands the settings snapshot to the handler.
+async fn remote_manage_middleware(
+    State(ctx): State<Arc<GatewayContext>>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let settings = ctx.settings.read().await.clone();
+    if !(settings.link.expose_local_models && settings.link.allow_remote_manage) {
+        return openai_error(
+            StatusCode::FORBIDDEN,
+            "Remote runtime/model management is disabled on this device.",
+        );
+    }
+    req.extensions_mut().insert(settings);
+    next.run(req).await
 }
 
 fn is_verified_link_request(ctx: &GatewayContext, headers: &HeaderMap) -> bool {
@@ -735,20 +735,6 @@ async fn link_unload_model_handler(
     .into_response()
 }
 
-async fn require_remote_manage(
-    ctx: &GatewayContext,
-) -> Result<bibulm_core::AppSettings, Box<Response>> {
-    let settings = ctx.settings.read().await.clone();
-    if settings.link.expose_local_models && settings.link.allow_remote_manage {
-        Ok(settings)
-    } else {
-        Err(Box::new(openai_error(
-            StatusCode::FORBIDDEN,
-            "Remote runtime/model management is disabled on this device.",
-        )))
-    }
-}
-
 /// Only official `ggml-org/llama.cpp` release assets may be installed remotely.
 pub fn is_valid_llama_release_url(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
@@ -816,11 +802,10 @@ fn action_ok(message: &str) -> Response {
     .into_response()
 }
 
-async fn link_list_runtimes_handler(State(ctx): State<Arc<GatewayContext>>) -> Response {
-    let settings = match require_remote_manage(&ctx).await {
-        Ok(s) => s,
-        Err(r) => return *r,
-    };
+async fn link_list_runtimes_handler(
+    State(ctx): State<Arc<GatewayContext>>,
+    Extension(settings): Extension<AppSettings>,
+) -> Response {
     let hw = ctx.hw_snapshot.read().await.clone();
     match ctx.db.list_runtimes() {
         Ok(installed) => axum::Json(RemoteRuntimesResponse {
@@ -834,11 +819,10 @@ async fn link_list_runtimes_handler(State(ctx): State<Arc<GatewayContext>>) -> R
     }
 }
 
-async fn link_fetch_runtime_releases_handler(State(ctx): State<Arc<GatewayContext>>) -> Response {
-    let settings = match require_remote_manage(&ctx).await {
-        Ok(s) => s,
-        Err(r) => return *r,
-    };
+async fn link_fetch_runtime_releases_handler(
+    State(ctx): State<Arc<GatewayContext>>,
+    Extension(settings): Extension<AppSettings>,
+) -> Response {
     let hw_ctx = ctx.hw_snapshot.read().await.to_runtime_match_context();
     match bibulm_runtime::fetch_llama_cpp_releases(settings.github_token.as_deref(), &hw_ctx).await
     {
@@ -849,12 +833,9 @@ async fn link_fetch_runtime_releases_handler(State(ctx): State<Arc<GatewayContex
 
 async fn link_install_runtime_handler(
     State(ctx): State<Arc<GatewayContext>>,
+    Extension(settings): Extension<AppSettings>,
     axum::Json(req): axum::Json<RemoteInstallRuntimeRequest>,
 ) -> Response {
-    let settings = match require_remote_manage(&ctx).await {
-        Ok(s) => s,
-        Err(r) => return *r,
-    };
     let Some(downloads) = ctx.downloads.clone() else {
         return openai_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1004,9 +985,6 @@ async fn link_set_active_runtime_handler(
     State(ctx): State<Arc<GatewayContext>>,
     axum::Json(req): axum::Json<RemoteSetActiveRuntimeRequest>,
 ) -> Response {
-    if let Err(r) = require_remote_manage(&ctx).await {
-        return *r;
-    }
     let known = ctx
         .db
         .list_runtimes()
@@ -1031,9 +1009,6 @@ async fn link_uninstall_runtime_handler(
     State(ctx): State<Arc<GatewayContext>>,
     axum::Json(req): axum::Json<RemoteUninstallRuntimeRequest>,
 ) -> Response {
-    if let Err(r) = require_remote_manage(&ctx).await {
-        return *r;
-    }
     if let Err(e) = bibulm_runtime::uninstall_runtime(&ctx.db, &req.runtime_id) {
         return openai_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
@@ -1056,12 +1031,9 @@ async fn link_uninstall_runtime_handler(
 
 async fn link_enqueue_model_download_handler(
     State(ctx): State<Arc<GatewayContext>>,
+    Extension(settings): Extension<AppSettings>,
     axum::Json(req): axum::Json<RemoteModelDownloadRequest>,
 ) -> Response {
-    let settings = match require_remote_manage(&ctx).await {
-        Ok(s) => s,
-        Err(r) => return *r,
-    };
     let Some(downloads) = ctx.downloads.clone() else {
         return openai_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1091,9 +1063,6 @@ async fn link_enqueue_model_download_handler(
 }
 
 async fn link_list_downloads_handler(State(ctx): State<Arc<GatewayContext>>) -> Response {
-    if let Err(r) = require_remote_manage(&ctx).await {
-        return *r;
-    }
     let jobs = match ctx.downloads.as_ref() {
         Some(d) => d.list_jobs().await,
         None => Vec::new(),
@@ -1105,9 +1074,6 @@ async fn link_pause_download_handler(
     State(ctx): State<Arc<GatewayContext>>,
     axum::Json(req): axum::Json<RemoteDownloadActionRequest>,
 ) -> Response {
-    if let Err(r) = require_remote_manage(&ctx).await {
-        return *r;
-    }
     let ok = match ctx.downloads.as_ref() {
         Some(d) => d.pause(&req.id).await,
         None => false,
@@ -1117,12 +1083,9 @@ async fn link_pause_download_handler(
 
 async fn link_resume_download_handler(
     State(ctx): State<Arc<GatewayContext>>,
+    Extension(settings): Extension<AppSettings>,
     axum::Json(req): axum::Json<RemoteDownloadActionRequest>,
 ) -> Response {
-    let settings = match require_remote_manage(&ctx).await {
-        Ok(s) => s,
-        Err(r) => return *r,
-    };
     let ok = match ctx.downloads.as_ref() {
         Some(d) => d.resume_or_retry(&req.id, settings.hf_token).await,
         None => false,
@@ -1134,9 +1097,6 @@ async fn link_cancel_download_handler(
     State(ctx): State<Arc<GatewayContext>>,
     axum::Json(req): axum::Json<RemoteDownloadActionRequest>,
 ) -> Response {
-    if let Err(r) = require_remote_manage(&ctx).await {
-        return *r;
-    }
     let ok = match ctx.downloads.as_ref() {
         Some(d) => d.cancel(&req.id).await,
         None => false,
@@ -1147,9 +1107,6 @@ async fn link_cancel_download_handler(
 async fn link_clear_completed_downloads_handler(
     State(ctx): State<Arc<GatewayContext>>,
 ) -> Response {
-    if let Err(r) = require_remote_manage(&ctx).await {
-        return *r;
-    }
     if let Some(d) = ctx.downloads.as_ref() {
         d.clear_completed().await;
     }
@@ -1158,12 +1115,9 @@ async fn link_clear_completed_downloads_handler(
 
 async fn link_delete_model_handler(
     State(ctx): State<Arc<GatewayContext>>,
+    Extension(settings): Extension<AppSettings>,
     axum::Json(req): axum::Json<RemoteDeleteModelRequest>,
 ) -> Response {
-    let settings = match require_remote_manage(&ctx).await {
-        Ok(s) => s,
-        Err(r) => return *r,
-    };
     let Some(local) = ctx.find_local_model(&req.model_id).await else {
         return openai_error(
             StatusCode::NOT_FOUND,
@@ -1196,46 +1150,17 @@ async fn link_delete_model_handler(
 }
 
 async fn link_get_logs_handler(State(ctx): State<Arc<GatewayContext>>) -> Response {
-    if let Err(r) = require_remote_manage(&ctx).await {
-        return *r;
-    }
     axum::Json(ctx.supervisor.recent_logs().await).into_response()
 }
 
-async fn chat_completions_handler(
+async fn openai_proxy_handler(
     State(ctx): State<Arc<GatewayContext>>,
+    path: MatchedPath,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let is_link = is_verified_link_request(&ctx, &headers);
-    proxy_openai_post((*ctx).clone(), "/v1/chat/completions", body, is_link).await
-}
-
-async fn completions_handler(
-    State(ctx): State<Arc<GatewayContext>>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let is_link = is_verified_link_request(&ctx, &headers);
-    proxy_openai_post((*ctx).clone(), "/v1/completions", body, is_link).await
-}
-
-async fn embeddings_handler(
-    State(ctx): State<Arc<GatewayContext>>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let is_link = is_verified_link_request(&ctx, &headers);
-    proxy_openai_post((*ctx).clone(), "/v1/embeddings", body, is_link).await
-}
-
-async fn responses_handler(
-    State(ctx): State<Arc<GatewayContext>>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let is_link = is_verified_link_request(&ctx, &headers);
-    proxy_openai_post((*ctx).clone(), "/v1/responses", body, is_link).await
+    proxy_openai_post((*ctx).clone(), path.as_str(), body, is_link).await
 }
 
 async fn anthropic_messages_handler(
@@ -1646,16 +1571,23 @@ mod tests {
             .with_downloads(downloads)
             .with_headless(true);
 
-        // Handlers (bypassing secret middleware) enforce `allow_remote_manage`.
-        let denied = link_list_runtimes_handler(State(Arc::new(ctx.clone()))).await;
+        // The management routes (without the secret middleware) enforce `allow_remote_manage`.
+        let state = Arc::new(ctx.clone());
+        let mut manage = remote_manage_routes(state.clone()).with_state(state);
+        let denied = send_req(
+            &mut manage,
+            Request::builder().uri("/link/v1/runtimes").body(Body::empty()).unwrap(),
+        )
+        .await;
         assert_eq!(denied.status(), StatusCode::FORBIDDEN);
-        let denied_dl = link_enqueue_model_download_handler(
-            State(Arc::new(ctx.clone())),
-            axum::Json(RemoteModelDownloadRequest {
-                title: "t".into(),
-                repo_id: "org/repo".into(),
-                files: vec![],
-            }),
+        let denied_dl = send_req(
+            &mut manage,
+            Request::builder()
+                .method(Method::POST)
+                .uri("/link/v1/models/download")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"title":"t","repo_id":"org/repo","files":[]}"#))
+                .unwrap(),
         )
         .await;
         assert_eq!(denied_dl.status(), StatusCode::FORBIDDEN);
@@ -1685,13 +1617,23 @@ mod tests {
 
         // Enable management: listings succeed, unsafe URLs are rejected.
         ctx.settings.write().await.link.allow_remote_manage = true;
-        let ok_rt = link_list_runtimes_handler(State(Arc::new(ctx.clone()))).await;
+        let ok_rt = send_req(
+            &mut manage,
+            Request::builder().uri("/link/v1/runtimes").body(Body::empty()).unwrap(),
+        )
+        .await;
         assert_eq!(ok_rt.status(), StatusCode::OK);
-        let ok_dl = link_list_downloads_handler(State(Arc::new(ctx.clone()))).await;
+        let ok_dl = send_req(
+            &mut manage,
+            Request::builder().uri("/link/v1/downloads").body(Body::empty()).unwrap(),
+        )
+        .await;
         assert_eq!(ok_dl.status(), StatusCode::OK);
+        let enabled = Extension(ctx.settings.read().await.clone());
 
         let bad_url = link_enqueue_model_download_handler(
             State(Arc::new(ctx.clone())),
+            enabled.clone(),
             axum::Json(RemoteModelDownloadRequest {
                 title: "t".into(),
                 repo_id: "org/repo".into(),
@@ -1709,6 +1651,7 @@ mod tests {
 
         let bad_name = link_enqueue_model_download_handler(
             State(Arc::new(ctx)),
+            enabled,
             axum::Json(RemoteModelDownloadRequest {
                 title: "t".into(),
                 repo_id: "org/repo".into(),
