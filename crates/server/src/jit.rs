@@ -1,5 +1,5 @@
 use axum::http::StatusCode;
-use bibulm_core::{AppSettings, Database, LiveMemoryContext, LoadConfig};
+use bibulm_core::{AppSettings, Database, LiveMemoryContext, LoadConfig, canonical_file_within};
 use bibulm_link::{LinkManager, RemotePeer};
 use bibulm_models::{LocalModelEntry, scan_local_models_with_external};
 use bibulm_runtime::{LoadedModelInfo, ModelSupervisor};
@@ -178,7 +178,17 @@ impl GatewayContext {
             return Some(found);
         }
 
-        // Cache miss: force a fresh scan once in case a model was just added on disk.
+        // Cache miss: rescan in case a model was just added on disk, but at most every few
+        // seconds — unknown names (peer models, generic ids) would otherwise rescan per request.
+        let recently_scanned = self
+            .models_cache
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|(ts, ..)| ts.elapsed() < Duration::from_secs(5));
+        if recently_scanned {
+            return None;
+        }
         self.invalidate_models_cache().await;
         let fresh = self.cached_local_models().await;
         match_fn(&fresh)
@@ -520,18 +530,8 @@ impl GatewayContext {
             let is_known_mmproj = all_locals
                 .iter()
                 .any(|m| m.mmproj_path.as_ref().is_some_and(|p| p == mm));
-            let in_allowed_root = std::fs::canonicalize(mm).is_ok_and(|canon| {
-                canon.is_file()
-                    && canon
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
-                    && cfg_snap.models_dirs.iter().any(|root| {
-                        std::fs::canonicalize(root)
-                            .map(|r| canon.starts_with(r))
-                            .unwrap_or(false)
-                    })
-            });
+            let in_allowed_root =
+                canonical_file_within(mm, &cfg_snap.models_dirs, &["gguf"]).is_some();
             if !is_paired && !is_known_mmproj && !in_allowed_root {
                 load_cfg.mmproj_path = local.mmproj_path.clone();
             }
@@ -694,28 +694,9 @@ impl GatewayContext {
 }
 
 fn is_allowed_template_file(path: &PathBuf, models_dirs: &[PathBuf]) -> bool {
-    let Ok(canon) = std::fs::canonicalize(path) else {
-        return false;
-    };
-    if !canon.is_file() {
-        return false;
-    }
-    let ext_ok = canon
-        .extension()
-        .and_then(|s| s.to_str())
-        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "jinja" | "j2" | "txt" | "tmpl"));
-    if !ext_ok {
-        return false;
-    }
     let templates_dir = bibulm_core::default_data_dir().join("templates");
-    models_dirs
-        .iter()
-        .chain(std::iter::once(&templates_dir))
-        .any(|root| {
-            std::fs::canonicalize(root)
-                .map(|r| canon.starts_with(r))
-                .unwrap_or(false)
-        })
+    let roots = models_dirs.iter().chain(std::iter::once(&templates_dir));
+    canonical_file_within(path, roots, &["jinja", "j2", "txt", "tmpl"]).is_some()
 }
 
 fn is_safe_remote_cli_flag(flag: &str) -> bool {

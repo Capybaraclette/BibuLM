@@ -65,9 +65,6 @@ export const api = {
   getSettings: () => invoke<AppSettings>('get_settings'),
   saveSettings: (settings: AppSettings) => invoke<AppSettings>('save_settings', { settings }),
   getModelPreset: (modelId: string) => invoke<LoadConfig | null>('get_model_preset', { modelId }),
-  saveModelPreset: (modelId: string, config: LoadConfig) =>
-    invoke<void>('save_model_preset', { modelId, config }),
-  deleteModelPreset: (modelId: string) => invoke<void>('delete_model_preset', { modelId }),
   listNamedPresets: (kind?: string) =>
     invoke<NamedPresetRecord[]>('list_named_presets', { kind: kind ?? null }),
   saveNamedPreset: (id: string | null, name: string, kind: string, payloadJson: string) =>
@@ -77,7 +74,6 @@ export const api = {
   // Local Library & Estimator
   scanLocalLibrary: () => invoke<LocalModelEntry[]>('scan_local_library'),
   listDiscoveredModelSources: () => invoke<ExternalModelSource[]>('list_discovered_model_sources'),
-  inspectGgufFile: (path: string) => invoke<GgufMetadata>('inspect_gguf_file', { path }),
   checkDraftModelCompatibility: (mainPath: string, draftPath: string) =>
     invoke<DraftCompatibilityReport>('check_draft_model_compatibility', {
       mainPath,
@@ -184,7 +180,6 @@ export const api = {
     }),
   readTextFilePreview: (path: string) => invoke<string>('read_text_file_preview', { path }),
   unloadModel: (modelId: string) => invoke<boolean>('unload_model_cmd', { modelId }),
-  unloadAllModels: () => invoke<void>('unload_all_models'),
   listLoadedModels: () => invoke<LoadedModelInfo[]>('list_loaded_models'),
   getServerLogs: () => invoke<ServerLogEntry[]>('get_server_logs'),
   clearServerLogs: () => invoke<void>('clear_server_logs'),

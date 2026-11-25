@@ -2,6 +2,7 @@ use crate::state::AppState;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "windows")]
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;

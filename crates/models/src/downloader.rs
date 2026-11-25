@@ -398,7 +398,7 @@ async fn run_resumable_job(
 
         let resp = req.send().await?;
         let status = resp.status();
-        let mut out_file = if status == reqwest::StatusCode::PARTIAL_CONTENT && existing_part > 0 {
+        let file = if status == reqwest::StatusCode::PARTIAL_CONTENT && existing_part > 0 {
             let mut file = OpenOptions::new().write(true).open(&part_path)?;
             file.seek(SeekFrom::End(0))?;
             file
@@ -411,6 +411,8 @@ async fn run_resumable_job(
                 url: f.url.clone(),
             });
         };
+        // Network chunks are small; batch them into fewer blocking writes on the async worker.
+        let mut out_file = std::io::BufWriter::with_capacity(1 << 20, file);
 
         let mut file_downloaded = existing_part;
         let mut last_emit = Instant::now();
@@ -506,12 +508,7 @@ fn compute_sha256(path: &Path) -> std::io::Result<String> {
         }
         hasher.update(&buf[..n]);
     }
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(64);
-    for b in digest {
-        hex.push_str(&format!("{b:02x}"));
-    }
-    Ok(hex)
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn to_record(j: &DownloadJobState) -> DownloadRecord {

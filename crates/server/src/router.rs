@@ -1171,14 +1171,8 @@ async fn link_delete_model_handler(
         );
     };
     // Only models inside this device's configured model directories may be deleted remotely.
-    let canon = std::fs::canonicalize(&local.path).ok();
-    let in_managed_dir = canon.as_ref().is_some_and(|c| {
-        settings.models_dirs.iter().any(|root| {
-            std::fs::canonicalize(root)
-                .map(|r| c.starts_with(r))
-                .unwrap_or(false)
-        })
-    });
+    let in_managed_dir =
+        bibulm_core::canonical_file_within(&local.path, &settings.models_dirs, &[]).is_some();
     if !in_managed_dir {
         return openai_error(
             StatusCode::FORBIDDEN,

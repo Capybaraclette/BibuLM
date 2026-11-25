@@ -380,24 +380,6 @@ pub async fn unload_model_cmd(
 }
 
 #[tauri::command]
-pub async fn unload_all_models(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    state.supervisor.unload_all().await;
-    state.link.notify_peers_state_changed();
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    let disabled = state.settings.read().await.disabled_gpu_ids.clone();
-    let snap_opt = state
-        .hardware
-        .lock()
-        .ok()
-        .map(|mut hw| hw.reset_memory_average(&disabled));
-    if let Some(snap) = snap_opt {
-        let _ = app.emit("telemetry-update", &snap);
-    }
-    let _ = app.emit("loaded-models-changed", Vec::<LoadedModelInfo>::new());
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn list_loaded_models(
     state: State<'_, AppState>,
 ) -> Result<Vec<LoadedModelInfo>, String> {

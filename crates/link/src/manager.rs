@@ -323,13 +323,9 @@ impl LinkManager {
                 }
 
                 if is_connected {
+                    // The sidecar re-probes peers on its own 3 s ticker; just read its cached list.
                     let next_peers_res =
-                        match refresh_bridge_peers(&poll_client, bridge_port, &poll_secret).await {
-                            Ok(list) => Ok(list),
-                            Err(_) => {
-                                fetch_bridge_peers(&poll_client, bridge_port, &poll_secret).await
-                            }
-                        };
+                        fetch_bridge_peers(&poll_client, bridge_port, &poll_secret).await;
                     if let Ok(next_peers) = next_peers_res {
                         let changed = {
                             let mut cur = poll_peers.write().await;
@@ -1123,25 +1119,6 @@ async fn fetch_bridge_peers(
         .get(url)
         .header(LINK_SECRET_HEADER, secret)
         .timeout(Duration::from_secs(4))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    resp.json::<Vec<RemotePeer>>().await.map_err(|e| e.to_string())
-}
-
-async fn refresh_bridge_peers(
-    client: &reqwest::Client,
-    bridge_port: u16,
-    secret: &str,
-) -> Result<Vec<RemotePeer>, String> {
-    let url = format!("http://127.0.0.1:{bridge_port}/bridge/peers/refresh");
-    let resp = client
-        .post(url)
-        .header(LINK_SECRET_HEADER, secret)
-        .timeout(Duration::from_secs(6))
         .send()
         .await
         .map_err(|e| e.to_string())?;

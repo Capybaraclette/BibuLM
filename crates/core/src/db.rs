@@ -132,6 +132,7 @@ impl Database {
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
             PRAGMA foreign_keys = ON;
 
             CREATE TABLE IF NOT EXISTS kv_settings (
@@ -338,12 +339,6 @@ impl Database {
              ON CONFLICT(model_id) DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at",
             params![model_id, json, now],
         )?;
-        Ok(())
-    }
-
-    pub fn delete_model_preset(&self, model_id: &str) -> Result<(), DbError> {
-        let conn = self.conn.lock().map_err(|_| DbError::LockPoisoned)?;
-        conn.execute("DELETE FROM model_presets WHERE model_id = ?1", params![model_id])?;
         Ok(())
     }
 

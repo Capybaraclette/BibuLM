@@ -73,26 +73,6 @@ pub fn get_model_preset(
 }
 
 #[tauri::command]
-pub fn save_model_preset(
-    state: State<'_, AppState>,
-    model_id: String,
-    config: LoadConfig,
-) -> Result<(), String> {
-    state
-        .db
-        .save_model_preset(&model_id, &config)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn delete_model_preset(state: State<'_, AppState>, model_id: String) -> Result<(), String> {
-    state
-        .db
-        .delete_model_preset(&model_id)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 pub fn list_named_presets(
     state: State<'_, AppState>,
     kind: Option<String>,
