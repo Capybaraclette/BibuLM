@@ -6,7 +6,8 @@ use crate::types::{
     RemoteUninstallRuntimeRequest,
 };
 use bibulm_core::{LinkConfig, LoadConfig, default_data_dir};
-use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -581,32 +582,10 @@ impl LinkManager {
         model_id: &str,
     ) -> Result<RemoteModelInspectResponse, String> {
         let peer = self
-            .find_peer(peer_id_or_slug)
-            .await
-            .ok_or_else(|| format!("Remote peer '{peer_id_or_slug}' not found or offline."))?;
-        if !peer.allow_remote_load {
-            return Err(format!(
-                "Remote peer '{}' does not allow remote model configuration.",
-                peer.device_name
-            ));
-        }
-
-        let payload = serde_json::to_value(RemoteModelInspectRequest {
-            model_id: model_id.to_string(),
-        })
-        .map_err(|e| e.to_string())?;
-
-        let resp = self
-            .proxy_post_json(&peer.tailscale_ip, "/link/v1/models/inspect", &payload)
+            .require_peer(peer_id_or_slug, PeerPermission::Load, "remote model configuration")
             .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote inspect failed ({status}): {text}"));
-        }
-        resp.json()
-            .await
-            .map_err(|e| format!("Invalid remote inspect response: {e}"))
+        let req = RemoteModelInspectRequest { model_id: model_id.to_string() };
+        self.remote_post(&peer, "/link/v1/models/inspect", &req, "inspect").await
     }
 
     /// Asks a remote peer to load one of its local models (using explicit config, saved preset, or auto-fit).
@@ -618,35 +597,10 @@ impl LinkManager {
         remember_preset: bool,
     ) -> Result<RemoteLoadResponse, String> {
         let peer = self
-            .find_peer(peer_id_or_slug)
-            .await
-            .ok_or_else(|| format!("Remote peer '{peer_id_or_slug}' not found or offline."))?;
-        if !peer.allow_remote_load {
-            return Err(format!(
-                "Remote peer '{}' does not allow remote model loading.",
-                peer.device_name
-            ));
-        }
-
-        let payload = serde_json::to_value(RemoteLoadRequest {
-            model_id: model_id.to_string(),
-            config,
-            remember_preset,
-        })
-        .map_err(|e| e.to_string())?;
-
-        let resp = self
-            .proxy_post_json(&peer.tailscale_ip, "/link/v1/models/load", &payload)
+            .require_peer(peer_id_or_slug, PeerPermission::Load, "remote model loading")
             .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote load failed ({status}): {text}"));
-        }
-        let parsed: RemoteLoadResponse = resp
-            .json()
-            .await
-            .map_err(|e| format!("Invalid remote load response: {e}"))?;
+        let req = RemoteLoadRequest { model_id: model_id.to_string(), config, remember_preset };
+        let parsed = self.remote_post(&peer, "/link/v1/models/load", &req, "load").await?;
         let _ = self.refresh_peers().await;
         Ok(parsed)
     }
@@ -658,51 +612,16 @@ impl LinkManager {
         model_id: &str,
     ) -> Result<RemoteLoadResponse, String> {
         let peer = self
-            .find_peer(peer_id_or_slug)
-            .await
-            .ok_or_else(|| format!("Remote peer '{peer_id_or_slug}' not found or offline."))?;
-        if !peer.allow_remote_load {
-            return Err(format!(
-                "Remote peer '{}' does not allow remote model unloading.",
-                peer.device_name
-            ));
-        }
-
-        let payload = serde_json::to_value(RemoteLoadRequest {
+            .require_peer(peer_id_or_slug, PeerPermission::Load, "remote model unloading")
+            .await?;
+        let req = RemoteLoadRequest {
             model_id: model_id.to_string(),
             config: None,
             remember_preset: false,
-        })
-        .map_err(|e| e.to_string())?;
-
-        let resp = self
-            .proxy_post_json(&peer.tailscale_ip, "/link/v1/models/unload", &payload)
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote unload failed ({status}): {text}"));
-        }
-        let parsed: RemoteLoadResponse = resp
-            .json()
-            .await
-            .map_err(|e| format!("Invalid remote unload response: {e}"))?;
+        };
+        let parsed = self.remote_post(&peer, "/link/v1/models/unload", &req, "unload").await?;
         let _ = self.refresh_peers().await;
         Ok(parsed)
-    }
-
-    async fn require_manageable_peer(&self, peer_id_or_slug: &str) -> Result<RemotePeer, String> {
-        let peer = self
-            .find_peer(peer_id_or_slug)
-            .await
-            .ok_or_else(|| format!("Remote peer '{peer_id_or_slug}' not found or offline."))?;
-        if !peer.allow_remote_manage {
-            return Err(format!(
-                "Remote peer '{}' does not allow remote runtime/model management.",
-                peer.device_name
-            ));
-        }
-        Ok(peer)
     }
 
     pub async fn remote_list_runtimes(
@@ -710,17 +629,7 @@ impl LinkManager {
         peer_id_or_slug: &str,
     ) -> Result<RemoteRuntimesResponse, String> {
         let peer = self.require_manageable_peer(peer_id_or_slug).await?;
-        let resp = self
-            .proxy_get(&peer.tailscale_ip, "/link/v1/runtimes")
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote runtimes failed ({status}): {text}"));
-        }
-        resp.json()
-            .await
-            .map_err(|e| format!("Invalid remote runtimes response: {e}"))
+        self.remote_get(&peer, "/link/v1/runtimes", "runtimes").await
     }
 
     pub async fn remote_fetch_runtime_releases(
@@ -728,17 +637,7 @@ impl LinkManager {
         peer_id_or_slug: &str,
     ) -> Result<Vec<bibulm_runtime::LlamaRelease>, String> {
         let peer = self.require_manageable_peer(peer_id_or_slug).await?;
-        let resp = self
-            .proxy_get(&peer.tailscale_ip, "/link/v1/runtimes/releases")
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote runtime releases failed ({status}): {text}"));
-        }
-        resp.json()
-            .await
-            .map_err(|e| format!("Invalid remote runtime releases response: {e}"))
+        self.remote_get(&peer, "/link/v1/runtimes/releases", "runtime releases").await
     }
 
     pub async fn remote_install_runtime(
@@ -748,22 +647,8 @@ impl LinkManager {
         release_notes: Option<String>,
     ) -> Result<RemoteInstallRuntimeResponse, String> {
         let peer = self.require_manageable_peer(peer_id_or_slug).await?;
-        let payload = serde_json::to_value(RemoteInstallRuntimeRequest {
-            variant,
-            release_notes,
-        })
-        .map_err(|e| e.to_string())?;
-        let resp = self
-            .proxy_post_json(&peer.tailscale_ip, "/link/v1/runtimes/install", &payload)
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote runtime install failed ({status}): {text}"));
-        }
-        resp.json()
-            .await
-            .map_err(|e| format!("Invalid remote runtime install response: {e}"))
+        let req = RemoteInstallRuntimeRequest { variant, release_notes };
+        self.remote_post(&peer, "/link/v1/runtimes/install", &req, "runtime install").await
     }
 
     pub async fn remote_set_active_runtime(
@@ -772,22 +657,10 @@ impl LinkManager {
         runtime_id: &str,
     ) -> Result<RemoteActionResponse, String> {
         let peer = self.require_manageable_peer(peer_id_or_slug).await?;
-        let payload = serde_json::to_value(RemoteSetActiveRuntimeRequest {
-            runtime_id: runtime_id.to_string(),
-        })
-        .map_err(|e| e.to_string())?;
-        let resp = self
-            .proxy_post_json(&peer.tailscale_ip, "/link/v1/runtimes/active", &payload)
+        let req = RemoteSetActiveRuntimeRequest { runtime_id: runtime_id.to_string() };
+        let parsed = self
+            .remote_post(&peer, "/link/v1/runtimes/active", &req, "set active runtime")
             .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote set active runtime failed ({status}): {text}"));
-        }
-        let parsed: RemoteActionResponse = resp
-            .json()
-            .await
-            .map_err(|e| format!("Invalid remote response: {e}"))?;
         let _ = self.refresh_peers().await;
         Ok(parsed)
     }
@@ -798,22 +671,10 @@ impl LinkManager {
         runtime_id: &str,
     ) -> Result<RemoteActionResponse, String> {
         let peer = self.require_manageable_peer(peer_id_or_slug).await?;
-        let payload = serde_json::to_value(RemoteUninstallRuntimeRequest {
-            runtime_id: runtime_id.to_string(),
-        })
-        .map_err(|e| e.to_string())?;
-        let resp = self
-            .proxy_post_json(&peer.tailscale_ip, "/link/v1/runtimes/uninstall", &payload)
+        let req = RemoteUninstallRuntimeRequest { runtime_id: runtime_id.to_string() };
+        let parsed = self
+            .remote_post(&peer, "/link/v1/runtimes/uninstall", &req, "uninstall runtime")
             .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote uninstall runtime failed ({status}): {text}"));
-        }
-        let parsed: RemoteActionResponse = resp
-            .json()
-            .await
-            .map_err(|e| format!("Invalid remote response: {e}"))?;
         let _ = self.refresh_peers().await;
         Ok(parsed)
     }
@@ -826,23 +687,8 @@ impl LinkManager {
         files: Vec<bibulm_models::HfDownloadFile>,
     ) -> Result<bibulm_models::DownloadJobState, String> {
         let peer = self.require_manageable_peer(peer_id_or_slug).await?;
-        let payload = serde_json::to_value(RemoteModelDownloadRequest {
-            title,
-            repo_id,
-            files,
-        })
-        .map_err(|e| e.to_string())?;
-        let resp = self
-            .proxy_post_json(&peer.tailscale_ip, "/link/v1/models/download", &payload)
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote model download failed ({status}): {text}"));
-        }
-        resp.json()
-            .await
-            .map_err(|e| format!("Invalid remote download job response: {e}"))
+        let req = RemoteModelDownloadRequest { title, repo_id, files };
+        self.remote_post(&peer, "/link/v1/models/download", &req, "model download").await
     }
 
     pub async fn remote_list_downloads(
@@ -850,17 +696,7 @@ impl LinkManager {
         peer_id_or_slug: &str,
     ) -> Result<Vec<bibulm_models::DownloadJobState>, String> {
         let peer = self.require_manageable_peer(peer_id_or_slug).await?;
-        let resp = self
-            .proxy_get(&peer.tailscale_ip, "/link/v1/downloads")
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote list downloads failed ({status}): {text}"));
-        }
-        resp.json()
-            .await
-            .map_err(|e| format!("Invalid remote downloads response: {e}"))
+        self.remote_get(&peer, "/link/v1/downloads", "list downloads").await
     }
 
     pub async fn remote_pause_download(
@@ -868,19 +704,7 @@ impl LinkManager {
         peer_id_or_slug: &str,
         id: &str,
     ) -> Result<bool, String> {
-        let peer = self.require_manageable_peer(peer_id_or_slug).await?;
-        let payload = serde_json::to_value(RemoteDownloadActionRequest { id: id.to_string() })
-            .map_err(|e| e.to_string())?;
-        let resp = self
-            .proxy_post_json(&peer.tailscale_ip, "/link/v1/downloads/pause", &payload)
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote pause download failed ({status}): {text}"));
-        }
-        let parsed: RemoteActionResponse = resp.json().await.map_err(|e| e.to_string())?;
-        Ok(parsed.ok)
+        self.remote_download_action(peer_id_or_slug, id, "pause").await
     }
 
     pub async fn remote_resume_download(
@@ -888,19 +712,7 @@ impl LinkManager {
         peer_id_or_slug: &str,
         id: &str,
     ) -> Result<bool, String> {
-        let peer = self.require_manageable_peer(peer_id_or_slug).await?;
-        let payload = serde_json::to_value(RemoteDownloadActionRequest { id: id.to_string() })
-            .map_err(|e| e.to_string())?;
-        let resp = self
-            .proxy_post_json(&peer.tailscale_ip, "/link/v1/downloads/resume", &payload)
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote resume download failed ({status}): {text}"));
-        }
-        let parsed: RemoteActionResponse = resp.json().await.map_err(|e| e.to_string())?;
-        Ok(parsed.ok)
+        self.remote_download_action(peer_id_or_slug, id, "resume").await
     }
 
     pub async fn remote_cancel_download(
@@ -908,18 +720,21 @@ impl LinkManager {
         peer_id_or_slug: &str,
         id: &str,
     ) -> Result<bool, String> {
+        self.remote_download_action(peer_id_or_slug, id, "cancel").await
+    }
+
+    async fn remote_download_action(
+        &self,
+        peer_id_or_slug: &str,
+        id: &str,
+        action: &str,
+    ) -> Result<bool, String> {
         let peer = self.require_manageable_peer(peer_id_or_slug).await?;
-        let payload = serde_json::to_value(RemoteDownloadActionRequest { id: id.to_string() })
-            .map_err(|e| e.to_string())?;
-        let resp = self
-            .proxy_post_json(&peer.tailscale_ip, "/link/v1/downloads/cancel", &payload)
+        let req = RemoteDownloadActionRequest { id: id.to_string() };
+        let path = format!("/link/v1/downloads/{action}");
+        let parsed: RemoteActionResponse = self
+            .remote_post(&peer, &path, &req, &format!("{action} download"))
             .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote cancel download failed ({status}): {text}"));
-        }
-        let parsed: RemoteActionResponse = resp.json().await.map_err(|e| e.to_string())?;
         Ok(parsed.ok)
     }
 
@@ -928,14 +743,9 @@ impl LinkManager {
         peer_id_or_slug: &str,
     ) -> Result<(), String> {
         let peer = self.require_manageable_peer(peer_id_or_slug).await?;
-        let resp = self
-            .proxy_post_json(&peer.tailscale_ip, "/link/v1/downloads/clear", &json!({}))
+        let _: RemoteActionResponse = self
+            .remote_post(&peer, "/link/v1/downloads/clear", &json!({}), "clear downloads")
             .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote clear downloads failed ({status}): {text}"));
-        }
         Ok(())
     }
 
@@ -945,22 +755,8 @@ impl LinkManager {
         model_id: &str,
     ) -> Result<RemoteActionResponse, String> {
         let peer = self.require_manageable_peer(peer_id_or_slug).await?;
-        let payload = serde_json::to_value(RemoteDeleteModelRequest {
-            model_id: model_id.to_string(),
-        })
-        .map_err(|e| e.to_string())?;
-        let resp = self
-            .proxy_post_json(&peer.tailscale_ip, "/link/v1/models/delete", &payload)
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote delete model failed ({status}): {text}"));
-        }
-        let parsed: RemoteActionResponse = resp
-            .json()
-            .await
-            .map_err(|e| format!("Invalid remote delete response: {e}"))?;
+        let req = RemoteDeleteModelRequest { model_id: model_id.to_string() };
+        let parsed = self.remote_post(&peer, "/link/v1/models/delete", &req, "delete model").await?;
         let _ = self.refresh_peers().await;
         Ok(parsed)
     }
@@ -970,15 +766,55 @@ impl LinkManager {
         peer_id_or_slug: &str,
     ) -> Result<Vec<bibulm_runtime::ServerLogEntry>, String> {
         let peer = self.require_manageable_peer(peer_id_or_slug).await?;
-        let resp = self.proxy_get(&peer.tailscale_ip, "/link/v1/logs").await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Remote logs failed ({status}): {text}"));
-        }
-        resp.json()
+        self.remote_get(&peer, "/link/v1/logs", "logs").await
+    }
+
+    async fn require_manageable_peer(&self, peer_id_or_slug: &str) -> Result<RemotePeer, String> {
+        let what = "remote runtime/model management";
+        self.require_peer(peer_id_or_slug, PeerPermission::Manage, what).await
+    }
+
+    /// Finds an online peer and checks it grants `perm`; `what` names the action in the error.
+    async fn require_peer(
+        &self,
+        peer_id_or_slug: &str,
+        perm: PeerPermission,
+        what: &str,
+    ) -> Result<RemotePeer, String> {
+        let peer = self
+            .find_peer(peer_id_or_slug)
             .await
-            .map_err(|e| format!("Invalid remote logs response: {e}"))
+            .ok_or_else(|| format!("Remote peer '{peer_id_or_slug}' not found or offline."))?;
+        let allowed = match perm {
+            PeerPermission::Load => peer.allow_remote_load,
+            PeerPermission::Manage => peer.allow_remote_manage,
+        };
+        if !allowed {
+            return Err(format!("Remote peer '{}' does not allow {what}.", peer.device_name));
+        }
+        Ok(peer)
+    }
+
+    async fn remote_get<T: DeserializeOwned>(
+        &self,
+        peer: &RemotePeer,
+        path: &str,
+        label: &str,
+    ) -> Result<T, String> {
+        let resp = self.proxy_get(&peer.tailscale_ip, path).await?;
+        decode_remote(resp, label).await
+    }
+
+    async fn remote_post<T: DeserializeOwned>(
+        &self,
+        peer: &RemotePeer,
+        path: &str,
+        body: &impl Serialize,
+        label: &str,
+    ) -> Result<T, String> {
+        let payload = serde_json::to_value(body).map_err(|e| e.to_string())?;
+        let resp = self.proxy_post_json(&peer.tailscale_ip, path, &payload).await?;
+        decode_remote(resp, label).await
     }
 
     pub async fn find_peer(&self, peer_id_or_slug: &str) -> Option<RemotePeer> {
@@ -1126,6 +962,27 @@ async fn fetch_bridge_peers(
         return Err(format!("HTTP {}", resp.status()));
     }
     resp.json::<Vec<RemotePeer>>().await.map_err(|e| e.to_string())
+}
+
+#[derive(Clone, Copy)]
+enum PeerPermission {
+    Load,
+    Manage,
+}
+
+/// Turns a peer reply into `T`, or an error naming the failed action and the peer's reason.
+async fn decode_remote<T: DeserializeOwned>(
+    resp: reqwest::Response,
+    label: &str,
+) -> Result<T, String> {
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("Remote {label} failed ({status}): {text}"));
+    }
+    resp.json()
+        .await
+        .map_err(|e| format!("Invalid remote {label} response: {e}"))
 }
 
 pub fn effective_device_name(cfg: &LinkConfig) -> String {
