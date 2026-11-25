@@ -219,6 +219,18 @@ fn apply_windows_taskbar_icon(win: &tauri::WebviewWindow) {
 #[cfg(not(windows))]
 fn apply_windows_taskbar_icon(_win: &tauri::WebviewWindow) {}
 
+#[cfg(windows)]
+fn trim_working_set() {
+    use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
+    // Passing usize::MAX (-1) trims cold init pages (e.g. NVML) out of the active working set.
+    unsafe {
+        let _ = SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
+}
+
+#[cfg(not(windows))]
+fn trim_working_set() {}
+
 fn show_or_create_main_window(app: &tauri::AppHandle) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || ensure_main_window(&handle));
@@ -241,6 +253,7 @@ pub fn run() {
     };
 
     let app_state = AppState::initialize().expect("Failed to initialize BibuLM core state");
+    trim_working_set();
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -267,12 +280,19 @@ pub fn run() {
                 loop {
                     interval.tick().await;
                     let state = tel_handle.state::<AppState>();
-                    let disabled = state.settings.read().await.disabled_gpu_ids.clone();
-                    let pids = state.supervisor.loaded_pids().await;
+                    let has_window = tel_handle.get_webview_window("main").is_some();
                     let cur_epoch = state.supervisor.memory_epoch();
                     let epoch_changed = cur_epoch != last_memory_epoch;
                     if epoch_changed {
                         last_memory_epoch = cur_epoch;
+                    }
+                    let (disabled, link_enabled) = {
+                        let s = state.settings.read().await;
+                        (s.disabled_gpu_ids.clone(), s.link.enabled)
+                    };
+                    let pids = state.supervisor.loaded_pids().await;
+                    if !has_window && pids.is_empty() && !link_enabled && !epoch_changed {
+                        continue;
                     }
                     let sample_res = {
                         match state.hardware.lock() {
@@ -427,31 +447,37 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { .. } = event {
-                let state = window.app_handle().state::<AppState>();
-                let minimize_to_tray = state
-                    .settings
-                    .try_read()
-                    .map(|s| s.minimize_to_tray)
-                    .unwrap_or(true);
-                if minimize_to_tray {
-                    // Allow the WebView window to close & terminate WebView2 processes;
-                    // RunEvent::ExitRequested keeps the headless Rust backend alive in tray.
-                    tracing::info!("Main window closed to tray — terminating WebView processes.");
-                } else {
-                    state.allow_exit.store(true, Ordering::Release);
-                    let sup = state.supervisor.clone();
-                    let link = state.link.clone();
-                    let link_cfg = state
+            match event {
+                WindowEvent::CloseRequested { .. } => {
+                    let state = window.app_handle().state::<AppState>();
+                    let minimize_to_tray = state
                         .settings
                         .try_read()
-                        .map(|s| s.link.clone())
-                        .unwrap_or_default();
-                    tauri::async_runtime::block_on(async move {
-                        link.disconnect(&link_cfg).await;
-                        sup.unload_all().await;
-                    });
+                        .map(|s| s.minimize_to_tray)
+                        .unwrap_or(true);
+                    if minimize_to_tray {
+                        // Allow the WebView window to close & terminate WebView2 processes;
+                        // RunEvent::ExitRequested keeps the headless Rust backend alive in tray.
+                        tracing::info!("Main window closed to tray — terminating WebView processes.");
+                    } else {
+                        state.allow_exit.store(true, Ordering::Release);
+                        let sup = state.supervisor.clone();
+                        let link = state.link.clone();
+                        let link_cfg = state
+                            .settings
+                            .try_read()
+                            .map(|s| s.link.clone())
+                            .unwrap_or_default();
+                        tauri::async_runtime::block_on(async move {
+                            link.disconnect(&link_cfg).await;
+                            sup.unload_all().await;
+                        });
+                    }
                 }
+                WindowEvent::Destroyed if window.label() == "main" => {
+                    trim_working_set();
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
