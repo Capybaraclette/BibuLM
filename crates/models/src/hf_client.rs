@@ -127,7 +127,7 @@ struct RawHfLfs {
 
 fn build_client() -> Result<reqwest::Client, HfError> {
     Ok(reqwest::Client::builder()
-        .user_agent("Bibulm/0.3 (HuggingFace GGUF Client)")
+        .user_agent("BibuLM/0.3 (HuggingFace GGUF Client)")
         .build()?)
 }
 

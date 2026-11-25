@@ -18,7 +18,7 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-/// Shared secret header authenticating requests between Bibulm and `bibulm-linkd`.
+/// Shared secret header authenticating requests between BibuLM and `bibulm-linkd`.
 pub const LINK_SECRET_HEADER: &str = "X-Link-Secret";
 
 #[derive(Debug, Deserialize)]
@@ -62,7 +62,7 @@ struct SidecarHandle {
 }
 
 /// Supervises the `bibulm-linkd` (`tsnet`) sidecar, manages Tailscale login/logout,
-/// caches discovered Bibulm peers, and proxies requests over the encrypted mesh.
+/// caches discovered BibuLM peers, and proxies requests over the encrypted mesh.
 pub struct LinkManager {
     secret: String,
     state_dir: PathBuf,
@@ -165,7 +165,7 @@ impl LinkManager {
         self.disconnect(cfg).await;
 
         let bin_path = locate_sidecar_binary().ok_or_else(|| {
-            "bibulm-linkd sidecar binary not found. Build it with `scripts/build-linkd.ps1` (or reinstall Bibulm).".to_string()
+            "bibulm-linkd sidecar binary not found. Build it with `scripts/build-linkd.ps1` (or reinstall BibuLM).".to_string()
         })?;
 
         std::fs::create_dir_all(&self.state_dir)
@@ -473,7 +473,7 @@ impl LinkManager {
         let bridge_port = self
             .bridge_port()
             .await
-            .ok_or_else(|| "Bibulm Link is not connected.".to_string())?;
+            .ok_or_else(|| "BibuLM Link is not connected.".to_string())?;
 
         let url = format!("http://127.0.0.1:{bridge_port}/bridge/peers/refresh");
         let resp = self
@@ -507,7 +507,7 @@ impl LinkManager {
         let bridge_port = self
             .bridge_port()
             .await
-            .ok_or_else(|| "Bibulm Link is not connected.".to_string())?;
+            .ok_or_else(|| "BibuLM Link is not connected.".to_string())?;
         let clean_path = remote_path.trim_start_matches('/');
         let url = format!(
             "http://127.0.0.1:{bridge_port}/bridge/proxy/{peer_ip}/{clean_path}"
@@ -1254,7 +1254,7 @@ fn current_target_triple() -> &'static str {
     }
 }
 
-// --- Windows Job Object Guard (ensures sidecar dies if Bibulm crashes) ---
+// --- Windows Job Object Guard (ensures sidecar dies if BibuLM crashes) ---
 
 #[cfg(target_os = "windows")]
 struct WindowsJobGuard {

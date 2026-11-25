@@ -4,13 +4,13 @@ use bibulm_core::LinkAccessPolicy;
 use std::path::PathBuf;
 
 pub const MAIN_HELP: &str = "\
-bibulm - headless Bibulm server (OpenAI-compatible inference + Bibulm Link)
+bibulm - headless BibuLM server (OpenAI-compatible inference + BibuLM Link)
 
 USAGE:
     bibulm [GLOBAL OPTIONS] <COMMAND> [OPTIONS]
 
 COMMANDS:
-    serve       Run the inference gateway and connect to your Bibulm Link mesh
+    serve       Run the inference gateway and connect to your BibuLM Link mesh
     login       Authenticate this machine on your Tailscale tailnet (one-time)
     logout      Remove this machine from your tailnet and forget its identity
     status      Show server, Link, runtime, model and download status
@@ -32,7 +32,7 @@ pub const SERVE_HELP: &str = "\
 bibulm serve - run the headless inference gateway
 
 OPTIONS:
-        --name <NAME>          Device name shown in Bibulm Desktop (env: BIBULM_DEVICE_NAME)
+        --name <NAME>          Device name shown in BibuLM Desktop (env: BIBULM_DEVICE_NAME)
         --port <PORT>          OpenAI API port, default 1234 (env: BIBULM_PORT)
         --lan                  Listen on 0.0.0.0 instead of 127.0.0.1
         --mesh-port <PORT>     Tailnet mesh port, default 11435
@@ -43,7 +43,7 @@ OPTIONS:
         --runtimes-dir <PATH>  Runtimes directory (env: BIBULM_RUNTIMES_DIR)
         --hf-token <TOKEN>     HuggingFace token (env: HF_TOKEN)
         --github-token <TOKEN> GitHub token for release lookups (env: GITHUB_TOKEN)
-        --no-link              Do not connect to Bibulm Link
+        --no-link              Do not connect to BibuLM Link
         --no-remote-load       Refuse remote model load/unload requests
         --no-remote-manage     Refuse remote runtime install / model download requests
 ";

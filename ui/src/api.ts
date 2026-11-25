@@ -211,7 +211,7 @@ export const api = {
   deleteBenchmarkRun: (id: string) => invoke<void>('delete_benchmark_run', { id }),
   exportBenchmarksCsv: () => invoke<string>('export_benchmarks_csv'),
 
-  // Bibulm Link (BYO Tailscale Mesh)
+  // BibuLM Link (BYO Tailscale Mesh)
   getLinkStatus: () => invoke<LinkStatus>('get_link_status'),
   linkConnect: () => invoke<LinkStatus>('link_connect'),
   linkDisconnect: () => invoke<LinkStatus>('link_disconnect'),

@@ -282,7 +282,7 @@ export const LinkView: React.FC<LinkViewProps> = ({
     <div className="h-full flex flex-col overflow-hidden">
       <PageHeader
         icon={<Link2 className="w-4 h-4" />}
-        title="Bibulm Link"
+        title="BibuLM Link"
         badge={
           <span className="apple-badge font-mono uppercase tracking-wider text-[10px]">
             BYO Tailscale
@@ -349,7 +349,7 @@ export const LinkView: React.FC<LinkViewProps> = ({
               </h2>
               <p className="text-[12px] text-[var(--label-secondary)] leading-relaxed">
                 Click below to authenticate this machine in your browser. Once signed in on two or
-                more devices, Bibulm automatically discovers your GPUs, streams remote models
+                more devices, BibuLM automatically discovers your GPUs, streams remote models
                 over encrypted WireGuard tunnels, and exposes them seamlessly on{' '}
                 <code className="text-[var(--label-primary)] font-mono">
                   http://127.0.0.1:{gatewayPort}/v1
@@ -427,7 +427,7 @@ export const LinkView: React.FC<LinkViewProps> = ({
                 </h2>
                 <p className="text-[12px] text-[var(--label-secondary)]">
                   {state === 'needs_login'
-                    ? 'Approve this device on your Tailscale account — Bibulm will connect automatically as soon as you finish.'
+                    ? 'Approve this device on your Tailscale account — BibuLM will connect automatically as soon as you finish.'
                     : `Initializing userspace node ${status?.hostname ?? ''}…`}
                 </p>
               </div>
@@ -640,7 +640,7 @@ export const LinkView: React.FC<LinkViewProps> = ({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <h2 className="text-[11px] font-semibold uppercase tracking-wider text-[var(--label-tertiary)]">
-                  Connected Bibulm Devices ({peers.length})
+                  Connected BibuLM Devices ({peers.length})
                 </h2>
                 {totalRemoteLoaded > 0 && (
                   <span className="apple-badge apple-badge-accent text-[11px]">
@@ -654,10 +654,10 @@ export const LinkView: React.FC<LinkViewProps> = ({
               <div className="bibulm-card border-dashed p-8 text-center space-y-2">
                 <Laptop className="w-7 h-7 text-[var(--label-quaternary)] mx-auto" />
                 <div className="text-[14px] font-medium text-[var(--label-primary)]">
-                  Waiting for other Bibulm devices on your Tailnet
+                  Waiting for other BibuLM devices on your Tailnet
                 </div>
                 <p className="text-[12px] text-[var(--label-secondary)] max-w-md mx-auto">
-                  Open Bibulm on another PC or laptop and sign in with{' '}
+                  Open BibuLM on another PC or laptop and sign in with{' '}
                   <strong className="text-[var(--label-primary)]">
                     {status.account_login ?? 'the same Tailscale account'}
                   </strong>
@@ -1281,7 +1281,7 @@ export const LinkView: React.FC<LinkViewProps> = ({
                     Auto-connect on launch
                   </div>
                   <div className="text-[11px] text-[var(--label-tertiary)]">
-                    Reconnect automatically when Bibulm starts
+                    Reconnect automatically when BibuLM starts
                   </div>
                 </div>
                 <Toggle

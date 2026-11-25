@@ -38,7 +38,7 @@ func main() {
 	flag.StringVar(&cfg.StateDir, "state-dir", "", "Directory for persistent tsnet state")
 	flag.StringVar(&cfg.Hostname, "hostname", "", "Tailnet hostname (will be prefixed with bibulm-)")
 	flag.StringVar(&cfg.ControlURL, "control-url", "", "Optional custom Tailscale/Headscale control URL")
-	flag.IntVar(&cfg.GatewayPort, "gateway-port", 1234, "Local Bibulm OpenAI gateway port")
+	flag.IntVar(&cfg.GatewayPort, "gateway-port", 1234, "Local BibuLM OpenAI gateway port")
 	flag.IntVar(&cfg.MeshPort, "mesh-port", 11435, "TCP port to listen on inside the tailnet")
 	flag.StringVar(&cfg.AccessPolicy, "access-policy", "self_only", "Access policy: self_only or same_tailnet")
 	flag.BoolVar(&cfg.ExposeLocalModels, "expose-models", true, "Expose local models over the tailnet")
@@ -103,7 +103,7 @@ func main() {
 		}
 	}()
 
-	// Emit single-line JSON readiness handshake on stdout for Bibulm.
+	// Emit single-line JSON readiness handshake on stdout for BibuLM.
 	handshake := map[string]any{
 		"event":       "ready",
 		"bridge_port": bridgePort,

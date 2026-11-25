@@ -208,7 +208,7 @@ pub async fn handle_anthropic_messages(
                 return anthropic_error(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "api_error",
-                    "Bibulm Link is not initialized.",
+                    "BibuLM Link is not initialized.",
                 );
             };
             let mut forwarded = req_json.clone();

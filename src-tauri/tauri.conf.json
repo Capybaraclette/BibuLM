@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Bibulm",
+  "productName": "BibuLM",
   "version": "1.0.0",
   "identifier": "com.bibulm.app",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Bibulm",
+        "title": "BibuLM",
         "create": false,
         "visible": false,
         "width": 1440,

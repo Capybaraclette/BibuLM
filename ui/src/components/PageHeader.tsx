@@ -10,7 +10,7 @@ interface PageHeaderProps {
 }
 
 /**
- * Clean macOS view header shared across all Bibulm workspace views.
+ * Clean macOS view header shared across all BibuLM workspace views.
  */
 export const PageHeader: React.FC<PageHeaderProps> = ({
   icon,

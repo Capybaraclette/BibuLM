@@ -343,7 +343,7 @@ async fn run_resumable_job(
 ) -> Result<(), DownloadError> {
     fs::create_dir_all(dest_dir)?;
     let client = reqwest::Client::builder()
-        .user_agent("Bibulm/0.3 (Resumable GGUF Downloader)")
+        .user_agent("BibuLM/0.3 (Resumable GGUF Downloader)")
         .build()?;
 
     let mut completed_prefix_bytes: u64 = 0;

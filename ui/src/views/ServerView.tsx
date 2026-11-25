@@ -452,7 +452,7 @@ export const ServerView: React.FC<ServerViewProps> = ({
             {loadedModels.length === 0 ? (
               <div className="bibulm-card py-10 text-center space-y-1.5">
                 <div className="text-[13px] text-[var(--label-secondary)]">
-                  Use Bibulm from IDEs, Python SDKs, or curl via the OpenAI-compatible API.
+                  Use BibuLM from IDEs, Python SDKs, or curl via the OpenAI-compatible API.
                 </div>
                 <div className="text-[11px] text-[var(--label-tertiary)]">
                   Press <kbd className="apple-kbd">⌃L</kbd> to load a model or let JIT loading boot
@@ -836,7 +836,7 @@ export const ServerView: React.FC<ServerViewProps> = ({
                     </button>
                   </div>
                   <div className="text-[11px] text-[var(--label-secondary)]">
-                    For security, Bibulm stores only a SHA-256 hash in SQLite. You won&apos;t be
+                    For security, BibuLM stores only a SHA-256 hash in SQLite. You won&apos;t be
                     able to reveal this raw key again.
                   </div>
                   <div className="flex items-center gap-2">

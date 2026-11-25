@@ -117,7 +117,7 @@ where
 }
 
 /// Executes a live streaming OpenAI `/v1/chat/completions` benchmark against an arbitrary
-/// URL (local `llama-server` or a remote Bibulm Link peer via the local `tsnet` bridge).
+/// URL (local `llama-server` or a remote BibuLM Link peer via the local `tsnet` bridge).
 #[allow(clippy::too_many_arguments)]
 pub async fn run_quick_speed_test_against_url<F>(
     endpoint_url: &str,

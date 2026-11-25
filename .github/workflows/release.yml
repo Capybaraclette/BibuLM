@@ -190,7 +190,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
-          name: Bibulm ${{ steps.tag.outputs.name }}
+          name: BibuLM ${{ steps.tag.outputs.name }}
           generate_release_notes: true
           files: |
             release-assets/*

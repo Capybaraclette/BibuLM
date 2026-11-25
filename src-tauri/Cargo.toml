@@ -3,7 +3,7 @@ name = "bibulm-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Bibulm — lightweight Rust + WebView desktop app for running local LLMs with llama.cpp"
+description = "BibuLM — lightweight Rust + WebView desktop app for running local LLMs with llama.cpp"
 
 [lib]
 name = "bibulm_app_lib"

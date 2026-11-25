@@ -135,7 +135,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div className="flex items-center justify-between pt-2 border-t border-[var(--border-hairline)]">
           <div>
             <div className="font-medium text-[var(--label-primary)]">
-              Check for Bibulm updates on launch
+              Check for BibuLM updates on launch
             </div>
             <div className="text-[11px] text-[var(--label-secondary)]">
               Queries GitHub Releases silently at startup and notifies you when a new installer is ready.
@@ -158,7 +158,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div className="flex items-center gap-2 rounded-xl bg-[var(--signal-green-soft)] border border-[var(--signal-green-border)] px-3 py-2 text-[11px] text-[var(--signal-green)]">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
             <span>
-              Bibulm is up to date (<strong>v{updateInfo.current_version}</strong>).
+              BibuLM is up to date (<strong>v{updateInfo.current_version}</strong>).
             </span>
           </div>
         )}
@@ -169,7 +169,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <div className="space-y-0.5">
                 <div className="font-semibold text-[var(--label-primary)] flex items-center gap-2">
                   <span>
-                    {updateInfo.release_name || `Bibulm v${updateInfo.latest_version}`}
+                    {updateInfo.release_name || `BibuLM v${updateInfo.latest_version}`}
                   </span>
                   {updateInfo.sha256 && (
                     <span className="apple-badge apple-badge-green text-[10px] font-normal">
@@ -440,7 +440,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               Auto-start OpenAI API Server on launch
             </div>
             <div className="text-[11px] text-[var(--label-secondary)]">
-              Starts the local gateway immediately when Bibulm opens.
+              Starts the local gateway immediately when BibuLM opens.
             </div>
           </div>
           <Toggle

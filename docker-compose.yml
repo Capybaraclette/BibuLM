@@ -1,7 +1,7 @@
-# Headless Bibulm server. Usage:
+# Headless BibuLM server. Usage:
 #   TS_AUTHKEY=tskey-auth-... docker compose up -d --build
 # Without TS_AUTHKEY, run `docker compose logs -f` and open the Tailscale login URL it prints.
-# Then open Bibulm Desktop > Link: the server appears as a peer you can manage remotely.
+# Then open BibuLM Desktop > Link: the server appears as a peer you can manage remotely.
 
 services:
   bibulm-server:

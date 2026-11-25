@@ -3,7 +3,7 @@ name = "bibulm-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Bibulm headless server CLI: serve inference on a server and manage it remotely from Bibulm Desktop over Bibulm Link"
+description = "BibuLM headless server CLI: serve inference on a server and manage it remotely from BibuLM Desktop over BibuLM Link"
 
 [[bin]]
 name = "bibulm"

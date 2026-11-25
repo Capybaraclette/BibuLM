@@ -1,17 +1,17 @@
 import React from 'react';
 import bibulmLogo from '../assets/bibulm-logo.png';
 
-interface BibulmLogoProps {
+interface BibuLMLogoProps {
   className?: string;
 }
 
 /**
- * Calico cat logo emblem for Bibulm.
+ * Calico cat logo emblem for BibuLM.
  */
-export const BibulmLogo: React.FC<BibulmLogoProps> = ({ className = 'w-5 h-5' }) => (
+export const BibuLMLogo: React.FC<BibuLMLogoProps> = ({ className = 'w-5 h-5' }) => (
   <img
     src={bibulmLogo}
-    alt="Bibulm"
+    alt="BibuLM"
     draggable={false}
     className={`${className} rounded-md object-contain shrink-0 select-none`}
   />

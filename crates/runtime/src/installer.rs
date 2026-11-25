@@ -59,7 +59,7 @@ where
     fs::create_dir_all(&temp_dir)?;
 
     let client = reqwest::Client::builder()
-        .user_agent("Bibulm/0.3 (llama.cpp runtime installer)")
+        .user_agent("BibuLM/0.3 (llama.cpp runtime installer)")
         .build()?;
 
     let total_bytes = variant.total_size_bytes.max(1);

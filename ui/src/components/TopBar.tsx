@@ -22,7 +22,7 @@ import type {
   RemotePeer,
 } from '../types';
 import { formatBytes, formatMiB } from '../api';
-import { BibulmLogo } from './BibulmLogo';
+import { BibuLMLogo } from './BibuLMLogo';
 import { PlacementBadge } from './PlacementBadge';
 import {
   WindowControls,
@@ -191,9 +191,9 @@ export const TopBar: React.FC<TopBarProps> = ({
         </button>
 
         <div className="flex items-center gap-2 min-w-0 pr-1">
-          <BibulmLogo className="w-5 h-5 rounded-[6px]" />
+          <BibuLMLogo className="w-5 h-5 rounded-[6px]" />
           <span className="text-[13px] font-semibold tracking-tight text-[var(--label-primary)] truncate">
-            Bibulm
+            BibuLM
           </span>
           {appVersion && (
             <span className="hidden sm:inline-block text-[11px] font-mono text-[var(--label-tertiary)] tabular-nums">
@@ -592,7 +592,7 @@ export const TopBar: React.FC<TopBarProps> = ({
                 ? 'bg-[var(--signal-amber-soft)] border-[var(--signal-amber-border)] text-[var(--signal-amber)]'
                 : 'bg-[var(--bg-control)] border-[var(--border-hairline)] text-[var(--label-secondary)] hover:text-[var(--label-primary)] hover:bg-[var(--bg-control-hover)]'
           }`}
-          title="Bibulm Link (BYO Tailscale)"
+          title="BibuLM Link (BYO Tailscale)"
         >
           <span
             className={`w-1.5 h-1.5 rounded-full ${

@@ -61,14 +61,14 @@ pub(crate) struct GhAsset {
 fn build_http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent(format!(
-            "Bibulm/{} (Windows; App Auto-Updater)",
+            "BibuLM/{} (Windows; App Auto-Updater)",
             current_app_version()
         ))
         .build()
         .map_err(|e| format!("Failed to initialize HTTP client: {e}"))
 }
 
-/// Checks GitHub Releases for a newer version of Bibulm.
+/// Checks GitHub Releases for a newer version of BibuLM.
 pub async fn check_for_app_update(github_token: Option<&str>) -> Result<AppUpdateInfo, String> {
     let client = build_http_client()?;
     let mut req = client
@@ -315,7 +315,7 @@ fn spawn_windows_updater_and_relaunch(installer_path: &std::path::Path) -> Resul
     let current_pid = std::process::id();
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::new());
     let default_nsis_exe = std::env::var_os("LOCALAPPDATA")
-        .map(|d| PathBuf::from(d).join("Bibulm").join("Bibulm.exe"))
+        .map(|d| PathBuf::from(d).join("BibuLM").join("BibuLM.exe"))
         .unwrap_or_default();
 
     let is_msi = installer_path
@@ -350,8 +350,8 @@ try {{
 Start-Sleep -Milliseconds 600
 {install_cmd}
 try {{
-    Add-Type -Namespace BibulmWin32 -Name ShellNotify -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll")] public static extern void SHChangeNotify(int wEventId, uint uFlags, System.IntPtr dwItem1, System.IntPtr dwItem2);'
-    [BibulmWin32.ShellNotify]::SHChangeNotify(0x08000000, 0x0000, [System.IntPtr]::Zero, [System.IntPtr]::Zero)
+    Add-Type -Namespace BibuLMWin32 -Name ShellNotify -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll")] public static extern void SHChangeNotify(int wEventId, uint uFlags, System.IntPtr dwItem1, System.IntPtr dwItem2);'
+    [BibuLMWin32.ShellNotify]::SHChangeNotify(0x08000000, 0x0000, [System.IntPtr]::Zero, [System.IntPtr]::Zero)
 }} catch {{}}
 Start-Sleep -Milliseconds 500
 if ('{default_exe_ps}' -and (Test-Path '{default_exe_ps}')) {{
@@ -567,16 +567,16 @@ mod tests {
     fn checksum_parser_matches_target_installer() {
         let hash = "a".repeat(64);
         let text = format!(
-            "{}  Bibulm_0.3.0_x64-setup.exe\n{} *Bibulm_0.3.0_x64_en-US.msi\n",
+            "{}  BibuLM_0.3.0_x64-setup.exe\n{} *BibuLM_0.3.0_x64_en-US.msi\n",
             hash,
             "b".repeat(64)
         );
         assert_eq!(
-            parse_sha256_for_file(&text, "Bibulm_0.3.0_x64-setup.exe"),
+            parse_sha256_for_file(&text, "BibuLM_0.3.0_x64-setup.exe"),
             Some(hash)
         );
         assert_eq!(
-            parse_sha256_for_file(&text, "Bibulm_0.3.0_x64_en-US.msi"),
+            parse_sha256_for_file(&text, "BibuLM_0.3.0_x64_en-US.msi"),
             Some("b".repeat(64))
         );
     }
@@ -584,7 +584,7 @@ mod tests {
     #[test]
     fn trusted_url_validator_blocks_non_github_hosts() {
         assert!(is_trusted_github_download_url(
-            "https://github.com/Capybaraclette/bibulm/releases/download/v0.3.0/Bibulm_0.3.0_x64-setup.exe"
+            "https://github.com/Capybaraclette/bibulm/releases/download/v0.3.0/BibuLM_0.3.0_x64-setup.exe"
         ));
         assert!(!is_trusted_github_download_url(
             "http://github.com/Capybaraclette/bibulm/releases/download/v0.3.0/setup.exe"
@@ -598,12 +598,12 @@ mod tests {
     fn arch_aware_installer_selection_and_mandatory_sha256() {
         let assets = vec![
             GhAsset {
-                name: "Bibulm_0.3.1_arm64-setup.exe".into(),
+                name: "BibuLM_0.3.1_arm64-setup.exe".into(),
                 browser_download_url: "https://github.com/a/b/releases/download/v0.3.1/arm64.exe".into(),
                 size: 100,
             },
             GhAsset {
-                name: "Bibulm_0.3.1_x64-setup.exe".into(),
+                name: "BibuLM_0.3.1_x64-setup.exe".into(),
                 browser_download_url: "https://github.com/a/b/releases/download/v0.3.1/x64.exe".into(),
                 size: 100,
             },
@@ -612,13 +612,13 @@ mod tests {
             select_windows_installer_asset_for_arch(&assets, "x86_64")
                 .unwrap()
                 .name,
-            "Bibulm_0.3.1_x64-setup.exe"
+            "BibuLM_0.3.1_x64-setup.exe"
         );
         assert_eq!(
             select_windows_installer_asset_for_arch(&assets, "aarch64")
                 .unwrap()
                 .name,
-            "Bibulm_0.3.1_arm64-setup.exe"
+            "BibuLM_0.3.1_arm64-setup.exe"
         );
         assert!(verify_required_sha256(None, &"a".repeat(64), "x.exe").is_err());
         assert!(verify_required_sha256(Some(&"a".repeat(64)), &"a".repeat(64), "x.exe").is_ok());

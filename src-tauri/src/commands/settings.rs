@@ -54,7 +54,7 @@ pub async fn save_settings(
         let _ = state.gateway.start().await;
     }
 
-    // Keep running Bibulm Link sidecar synced with updated policy/host sharing/port
+    // Keep running BibuLM Link sidecar synced with updated policy/host sharing/port
     let active_port = state.gateway.active_port().await;
     state.link.sync_config(&settings.link, active_port).await;
 

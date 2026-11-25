@@ -1,5 +1,5 @@
 //! Core domain types, native GGUF header parser, VRAM/RAM/MoE estimator,
-//! load configurations, placement reports, and SQLite persistence shared across all Bibulm crates.
+//! load configurations, placement reports, and SQLite persistence shared across all BibuLM crates.
 
 pub mod config;
 pub mod db;

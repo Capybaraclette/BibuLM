@@ -346,7 +346,7 @@ export const RuntimeView: React.FC<RuntimeViewProps> = ({
                 </div>
                 <p className="text-[var(--label-secondary)] mt-1">
                   Enable <strong>Allow remote install &amp; downloads</strong> in that device&apos;s
-                  Bibulm Link settings (or restart the headless CLI without{' '}
+                  BibuLM Link settings (or restart the headless CLI without{' '}
                   <code className="font-mono">--no-remote-manage</code>).
                 </p>
               </div>

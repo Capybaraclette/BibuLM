@@ -35,7 +35,7 @@ impl Drop for ActiveRequestGuard {
 }
 
 /// Proxies an OpenAI-compatible JSON POST request to either a local `llama-server`
-/// or a remote Bibulm Link peer over Tailscale, supporting non-streaming JSON
+/// or a remote BibuLM Link peer over Tailscale, supporting non-streaming JSON
 /// and unbuffered SSE streaming pass-through.
 pub async fn proxy_openai_post(
     ctx: GatewayContext,
@@ -148,7 +148,7 @@ pub async fn proxy_openai_post(
             let Some(link) = ctx.link.as_ref() else {
                 return openai_error(
                     StatusCode::SERVICE_UNAVAILABLE,
-                    "Bibulm Link is not initialized.",
+                    "BibuLM Link is not initialized.",
                 );
             };
 

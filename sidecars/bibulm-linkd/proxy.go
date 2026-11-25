@@ -10,7 +10,7 @@ import (
 
 // meshHandler handles incoming requests from other peers on the Tailnet (:11435),
 // authenticates them via Tailscale WhoIs, enforces local access policy, and proxies
-// them to the local Bibulm ApiGateway with unbuffered SSE streaming.
+// them to the local BibuLM ApiGateway with unbuffered SSE streaming.
 func (n *LinkNode) meshHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n.mu.RLock()
@@ -33,7 +33,7 @@ func (n *LinkNode) meshHandler() http.Handler {
 		}
 
 		if !checkAccessPolicy(policy, selfUID, who.UserProfile.ID) {
-			http.Error(w, "access denied by Bibulm Link policy", http.StatusForbidden)
+			http.Error(w, "access denied by BibuLM Link policy", http.StatusForbidden)
 			return
 		}
 
@@ -59,7 +59,7 @@ func (n *LinkNode) meshHandler() http.Handler {
 	})
 }
 
-// handleBridgeProxy proxies outgoing requests from Bibulm (Rust) to a remote Tailnet peer
+// handleBridgeProxy proxies outgoing requests from BibuLM (Rust) to a remote Tailnet peer
 // over tsnet.Server.Dial: /bridge/proxy/{peer_ip}/{remote_path...}
 func (n *LinkNode) handleBridgeProxy(w http.ResponseWriter, r *http.Request) {
 	trimmed := strings.TrimPrefix(r.URL.Path, "/bridge/proxy/")
@@ -94,7 +94,7 @@ func newStreamingReverseProxy(target *url.URL, transport http.RoundTripper) *htt
 		rp.Transport = transport
 	}
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		http.Error(w, fmt.Sprintf("Bibulm Link upstream error: %v", err), http.StatusBadGateway)
+		http.Error(w, fmt.Sprintf("BibuLM Link upstream error: %v", err), http.StatusBadGateway)
 	}
 	return rp
 }

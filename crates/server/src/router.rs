@@ -207,7 +207,7 @@ pub fn build_router(ctx: GatewayContext) -> Router {
         .route("/v1/responses", post(responses_handler))
         .route("/v1/messages", post(anthropic_messages_handler))
         .route("/v1/messages/count_tokens", post(anthropic_count_tokens_handler))
-        // Internal Bibulm Link mesh endpoints (strictly gated by X-Link-Secret from sidecar)
+        // Internal BibuLM Link mesh endpoints (strictly gated by X-Link-Secret from sidecar)
         .route("/link/v1/info", get(link_info_handler))
         .route("/link/v1/notify", post(link_notify_handler))
         .route("/link/v1/models/inspect", post(link_inspect_model_handler))
@@ -317,7 +317,7 @@ async fn auth_middleware(
         }
         return openai_error(
             StatusCode::FORBIDDEN,
-            "Internal Bibulm Link endpoint requires verified Tailnet peer.",
+            "Internal BibuLM Link endpoint requires verified Tailnet peer.",
         );
     }
 

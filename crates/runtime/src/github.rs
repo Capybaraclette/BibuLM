@@ -110,7 +110,7 @@ pub async fn fetch_llama_cpp_releases(
     hw: &HardwareMatchContext,
 ) -> Result<Vec<LlamaRelease>, GitHubError> {
     let client = reqwest::Client::builder()
-        .user_agent("Bibulm/0.3 (ggml-org/llama.cpp manager)")
+        .user_agent("BibuLM/0.3 (ggml-org/llama.cpp manager)")
         .build()?;
 
     let mut req = client

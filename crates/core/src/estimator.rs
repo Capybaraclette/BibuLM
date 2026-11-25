@@ -206,7 +206,7 @@ pub fn estimate_memory_usage_with_context(
 }
 
 /// Estimates VRAM vs RAM usage with optional pre-resolved `mmproj` and `draft` byte sizes
-/// (used when estimating for a remote Bibulm Link peer whose paths are not local).
+/// (used when estimating for a remote BibuLM Link peer whose paths are not local).
 pub fn estimate_memory_usage_with_sizes(
     meta: &GgufMetadata,
     config: &LoadConfig,

@@ -25,7 +25,7 @@ fn ensure_main_window(app: &tauri::AppHandle) {
         WebviewWindowBuilder::from_config(app, cfg).and_then(|b| b.visible(false).build())
     } else {
         WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
-            .title("Bibulm")
+            .title("BibuLM")
             .inner_size(1440.0, 900.0)
             .min_inner_size(1080.0, 700.0)
             .resizable(true)
@@ -231,16 +231,16 @@ pub fn run() {
 
     init_windows_app_user_model_id();
 
-    // Enforce single running Bibulm instance: if one is already running, focus it and exit.
+    // Enforce single running BibuLM instance: if one is already running, focus it and exit.
     let mut instance_guard = match SingleInstanceGuard::acquire(&default_data_dir()) {
         Some(g) => g,
         None => {
-            tracing::info!("Another Bibulm instance is already running — focusing it and exiting.");
+            tracing::info!("Another BibuLM instance is already running — focusing it and exiting.");
             return;
         }
     };
 
-    let app_state = AppState::initialize().expect("Failed to initialize Bibulm core state");
+    let app_state = AppState::initialize().expect("Failed to initialize BibuLM core state");
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -371,7 +371,7 @@ pub fn run() {
                 }
             });
 
-            // Forward real-time Bibulm Link status & peer events to UI
+            // Forward real-time BibuLM Link status & peer events to UI
             let link_st_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
                 let state = link_st_handle.state::<AppState>();
@@ -542,7 +542,7 @@ pub fn run() {
             commands::remote_get_logs,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building Bibulm");
+        .expect("error while building BibuLM");
 
     app.run(|app_handle, event| {
         if let RunEvent::ExitRequested { api, code, .. } = event {
@@ -558,15 +558,15 @@ pub fn run() {
 }
 
 fn setup_system_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let show_item = MenuItem::with_id(app, "show", "Open Bibulm", true, None::<&str>)?;
+    let show_item = MenuItem::with_id(app, "show", "Open BibuLM", true, None::<&str>)?;
     let unload_item =
         MenuItem::with_id(app, "unload_all", "Unload All Models", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "Quit Bibulm", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit BibuLM", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show_item, &unload_item, &quit_item])?;
 
     let mut builder = TrayIconBuilder::with_id("bibulm-tray")
         .menu(&menu)
-        .tooltip("Bibulm — Local LLM Workbench")
+        .tooltip("BibuLM — Local LLM Workbench")
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => {

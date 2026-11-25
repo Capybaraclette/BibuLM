@@ -35,7 +35,7 @@ fn print_json<T: serde::Serialize>(value: &T) {
 fn print_login_box(url: &str) {
     let line = "=".repeat(url.len().max(60) + 4);
     println!("\n{line}");
-    println!("  Sign in to Tailscale to link this server to your Bibulm devices:\n");
+    println!("  Sign in to Tailscale to link this server to your BibuLM devices:\n");
     println!("  {url}\n");
     println!("  (or restart with --authkey / TS_AUTHKEY for unattended setup)");
     println!("{line}\n");
@@ -59,7 +59,7 @@ fn print_connected(status: &LinkStatus, gateway_url: &str, runtimes: usize, mode
         "  remote mgmt: {}",
         if manage { "enabled" } else { "disabled" }
     );
-    println!("  -> open Bibulm Desktop > Link to manage this server.\n");
+    println!("  -> open BibuLM Desktop > Link to manage this server.\n");
 }
 
 async fn save_settings(node: &HeadlessNode, s: &AppSettings) -> anyhow::Result<()> {
@@ -204,7 +204,7 @@ pub async fn cmd_serve(node: &HeadlessNode, a: ServeArgs) -> anyhow::Result<()> 
         let authkey = a.authkey.clone();
         tokio::spawn(async move {
             if let Err(e) = link.connect_with_auth_key(&cfg, port, authkey.as_deref()).await {
-                eprintln!("[link] could not start Bibulm Link: {e}");
+                eprintln!("[link] could not start BibuLM Link: {e}");
                 eprintln!("[link] the local OpenAI API stays available.");
             }
         });
@@ -273,7 +273,7 @@ pub async fn cmd_login(node: &HeadlessNode, a: LoginArgs) -> anyhow::Result<()> 
         save_settings(node, &s).await?;
         (s.link.clone(), s.server.port)
     };
-    println!("Starting Bibulm Link...");
+    println!("Starting BibuLM Link...");
     node.link
         .connect_with_auth_key(&cfg, port, a.authkey.as_deref())
         .await
@@ -769,7 +769,7 @@ pub fn render_systemd_unit(p: &UnitParams) -> String {
         "/etc/bibulm/bibulm.env"
     };
     let mut out = String::new();
-    out.push_str("[Unit]\nDescription=Bibulm headless inference server\n");
+    out.push_str("[Unit]\nDescription=BibuLM headless inference server\n");
     out.push_str("After=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\n");
     out.push_str(&format!("ExecStart={}\n", exec.join(" ")));
     out.push_str(&format!("Environment=BIBULM_DATA_DIR={}\n", quote_arg(&p.data_dir)));

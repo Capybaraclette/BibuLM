@@ -1,4 +1,4 @@
-//! Bibulm Link: non-invasive BYO Tailscale userspace mesh powered by the
+//! BibuLM Link: non-invasive BYO Tailscale userspace mesh powered by the
 //! `bibulm-linkd` (`tsnet`) sidecar. Handles authentication, peer discovery,
 //! remote model resolution, and unbuffered streaming proxy calls.
 

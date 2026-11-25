@@ -626,7 +626,7 @@ export const App: React.FC = () => {
           <div className="flex items-center gap-2.5 min-w-0">
             <ArrowDownToLine className="w-4 h-4 text-[var(--accent-text)] shrink-0" />
             <span className="truncate">
-              <strong>Bibulm v{updateInfo.latest_version}</strong> is available (current v
+              <strong>BibuLM v{updateInfo.latest_version}</strong> is available (current v
               {updateInfo.current_version}).
               {installingUpdate && updateProgress && (
                 <span className="ml-2 text-[var(--accent-text)] font-mono tabular-nums">
@@ -940,7 +940,7 @@ export const App: React.FC = () => {
           <button
             onClick={() => setTab('link')}
             className="flex items-center gap-1.5 hover:text-[var(--label-primary)] transition-colors cursor-pointer"
-            title="Bibulm Link (BYO Tailscale)"
+            title="BibuLM Link (BYO Tailscale)"
           >
             <span
               className={`w-2 h-2 rounded-full ${

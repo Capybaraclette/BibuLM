@@ -1,4 +1,4 @@
-# Bibulm headless server image (CLI + Tailscale userspace sidecar).
+# BibuLM headless server image (CLI + Tailscale userspace sidecar).
 #   docker build -t bibulm-server .
 #   docker run -d -p 1234:1234 -v bibulm_data:/data -e TS_AUTHKEY=tskey-... bibulm-server
 

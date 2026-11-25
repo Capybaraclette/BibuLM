@@ -51,7 +51,7 @@ impl GuardrailLevel {
     }
 }
 
-/// Access policy governing which Tailscale peers may reach this Bibulm node.
+/// Access policy governing which Tailscale peers may reach this BibuLM node.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkAccessPolicy {
@@ -71,7 +71,7 @@ impl LinkAccessPolicy {
     }
 }
 
-/// Configuration for Bibulm Link (BYO Tailscale userspace mesh).
+/// Configuration for BibuLM Link (BYO Tailscale userspace mesh).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LinkConfig {
@@ -174,7 +174,7 @@ impl AppSettings {
     }
 }
 
-/// Resolves the platform-appropriate persistent data directory for Bibulm.
+/// Resolves the platform-appropriate persistent data directory for BibuLM.
 /// Respects `BIBULM_DATA_DIR` when set and non-empty.
 pub fn default_data_dir() -> PathBuf {
     if let Ok(override_dir) = std::env::var("BIBULM_DATA_DIR") {
@@ -183,7 +183,7 @@ pub fn default_data_dir() -> PathBuf {
             return PathBuf::from(trimmed);
         }
     }
-    if let Some(proj) = ProjectDirs::from("com", "bibulm", "Bibulm") {
+    if let Some(proj) = ProjectDirs::from("com", "bibulm", "BibuLM") {
         return proj.data_local_dir().to_path_buf();
     }
     if let Some(user) = UserDirs::new() {

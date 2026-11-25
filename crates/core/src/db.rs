@@ -94,7 +94,7 @@ pub struct BenchmarkRunRecord {
     pub notes: Option<String>,
 }
 
-/// Thread-safe SQLite store backing all persistent state in Bibulm.
+/// Thread-safe SQLite store backing all persistent state in BibuLM.
 #[derive(Clone)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,

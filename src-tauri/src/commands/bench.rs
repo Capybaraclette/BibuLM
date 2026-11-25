@@ -53,7 +53,7 @@ pub async fn run_quick_benchmark(
         return Ok(res);
     }
 
-    // Fallback: benchmark a remote Bibulm Link peer model
+    // Fallback: benchmark a remote BibuLM Link peer model
     let (peer, remote_model_id) = state
         .link
         .resolve_remote_model(&model_id)
