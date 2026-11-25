@@ -58,8 +58,7 @@ export const api = {
   // App Auto-Updater
   getAppVersion: () => invoke<string>('get_app_version'),
   checkAppUpdate: () => invoke<AppUpdateInfo>('check_app_update'),
-  installAppUpdate: (updateInfo: AppUpdateInfo) =>
-    invoke<void>('install_app_update', { updateInfo }),
+  installAppUpdate: () => invoke<void>('install_app_update'),
 
   // Settings & Presets
   getSettings: () => invoke<AppSettings>('get_settings'),

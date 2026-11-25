@@ -366,7 +366,7 @@ export const App: React.FC = () => {
       message: 'Starting update download...',
     });
     try {
-      await api.installAppUpdate(info);
+      await api.installAppUpdate();
     } catch (e) {
       setUpdateError(String(e));
       setInstallingUpdate(false);

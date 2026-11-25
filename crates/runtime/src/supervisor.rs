@@ -171,6 +171,11 @@ impl ModelSupervisor {
     ) -> Result<LoadedModelInfo, SupervisorError> {
         let _guard = self.load_lock.lock().await;
 
+        // Parallel JIT requests queue on load_lock: reuse what the first one loaded instead of killing it.
+        if is_jit && let Some(loaded) = self.resolve_loaded(&model_id).await {
+            return Ok(loaded);
+        }
+
         if !server_exe.is_file() {
             return Err(SupervisorError::RuntimeNotFound(
                 server_exe.to_string_lossy().into_owned(),

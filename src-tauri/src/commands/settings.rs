@@ -20,9 +20,13 @@ pub async fn check_app_update(state: State<'_, AppState>) -> Result<AppUpdateInf
 pub async fn install_app_update(
     app: AppHandle,
     state: State<'_, AppState>,
-    update_info: AppUpdateInfo,
 ) -> Result<(), String> {
     let token = state.settings.read().await.github_token.clone();
+    // Re-fetch from GitHub here: the webview must not choose which installer gets executed.
+    let update_info = check_for_app_update(token.as_deref()).await?;
+    if !update_info.update_available {
+        return Err("No newer Bibulm release is available.".to_string());
+    }
     download_and_install_update(&app, &state, update_info, token.as_deref()).await
 }
 

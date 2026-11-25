@@ -4,7 +4,7 @@ use crate::anthropic::{
 use crate::jit::GatewayContext;
 use crate::proxy::{openai_error, proxy_openai_post};
 use axum::Router;
-use axum::extract::{Request, State};
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -250,6 +250,8 @@ pub fn build_router(ctx: GatewayContext) -> Router {
             post(link_clear_completed_downloads_handler),
         )
         .route("/link/v1/logs", get(link_get_logs_handler))
+        // axum's 2 MB default rejects base64 images and long agent contexts.
+        .layer(DefaultBodyLimit::max(256 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), cors_middleware))
         .with_state(state)
@@ -327,7 +329,17 @@ async fn auth_middleware(
         return next.run(req).await;
     }
 
-    let require_auth = ctx.settings.read().await.server.require_auth;
+    let (serve_on_lan, require_auth) = {
+        let s = ctx.settings.read().await;
+        (s.server.serve_on_lan, s.server.require_auth)
+    };
+    // Blocks DNS rebinding: a web page whose domain resolves to 127.0.0.1 still sends its own Host.
+    if !serve_on_lan && !is_loopback_host(req.headers()) {
+        return openai_error(
+            StatusCode::FORBIDDEN,
+            "Host header must be localhost when LAN serving is disabled.",
+        );
+    }
     if !require_auth {
         return next.run(req).await;
     }
@@ -356,6 +368,20 @@ async fn auth_middleware(
             "Missing or invalid Bearer API key.",
         ),
     }
+}
+
+/// True for a missing Host (non-browser clients) or a loopback host name.
+fn is_loopback_host(headers: &HeaderMap) -> bool {
+    let Some(host) = headers.get(header::HOST) else {
+        return true;
+    };
+    host.to_str()
+        .ok()
+        .and_then(|h| h.parse::<axum::http::uri::Authority>().ok())
+        .is_some_and(|a| {
+            let name = a.host();
+            name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1" || name == "[::1]"
+        })
 }
 
 async fn health_handler(State(ctx): State<Arc<GatewayContext>>) -> Response {
@@ -727,11 +753,18 @@ async fn require_remote_manage(
 /// Only official `ggml-org/llama.cpp` release assets may be installed remotely.
 pub fn is_valid_llama_release_url(url: &str) -> bool {
     url.starts_with("https://github.com/ggml-org/llama.cpp/releases/download/")
+        && !escapes_url_prefix(url)
 }
 
 /// Only HuggingFace-hosted files may be downloaded remotely.
 pub fn is_valid_hf_download_url(url: &str) -> bool {
-    url.starts_with("https://huggingface.co/") || url.starts_with("https://hf.co/")
+    (url.starts_with("https://huggingface.co/") || url.starts_with("https://hf.co/"))
+        && !escapes_url_prefix(url)
+}
+
+/// URL parsing resolves `..`, `%2e%2e` and `\` segments, which would escape a checked path prefix.
+fn escapes_url_prefix(url: &str) -> bool {
+    url.contains("..") || url.contains('\\') || url.to_ascii_lowercase().contains("%2e")
 }
 
 pub fn is_safe_single_filename(name: &str) -> bool {
@@ -1282,6 +1315,29 @@ mod tests {
         .await;
         assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
 
+        // 2b. DNS rebinding: foreign Host is refused even with a valid token, loopback Host passes
+        let rebind = send_req(
+            &mut app,
+            Request::builder()
+                .uri("/v1/models")
+                .header(header::HOST, "evil.example:1234")
+                .header(header::AUTHORIZATION, format!("Bearer {}", token.token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(rebind.status(), StatusCode::FORBIDDEN);
+        let loopback = send_req(
+            &mut app,
+            Request::builder()
+                .uri("/v1/models")
+                .header(header::HOST, "localhost:1234")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(loopback.status(), StatusCode::UNAUTHORIZED);
+
         // 3. /v1/models with valid Bearer token -> 200
         let ok = send_req(
             &mut app,
@@ -1535,6 +1591,15 @@ mod tests {
         assert!(!is_valid_llama_release_url("https://evil.example/llama.zip"));
         assert!(!is_valid_llama_release_url(
             "https://github.com/evil/llama.cpp/releases/download/b1/x.zip"
+        ));
+        assert!(!is_valid_llama_release_url(
+            "https://github.com/ggml-org/llama.cpp/releases/download/../../../../evil/repo/releases/download/b1/x.zip"
+        ));
+        assert!(!is_valid_llama_release_url(
+            "https://github.com/ggml-org/llama.cpp/releases/download/%2E%2E/%2e%2e/x.zip"
+        ));
+        assert!(!is_valid_llama_release_url(
+            "https://github.com/ggml-org/llama.cpp/releases/download/..\\..\\x.zip"
         ));
         assert!(is_valid_hf_download_url(
             "https://huggingface.co/org/repo/resolve/main/m.gguf"

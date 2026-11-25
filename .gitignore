@@ -1,7 +1,6 @@
 # Rust / Cargo
 /target/
 **/*.rs.bk
-Cargo.lock
 
 # Frontend / Node / Tauri
 node_modules/
@@ -37,3 +36,4 @@ ARCHITECTURE.md
 todo.md
 /.agents
 /graphify-out
+ui/tsconfig.tsbuildinfo
