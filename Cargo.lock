@@ -470,6 +470,7 @@ version = "1.0.1"
 dependencies = [
  "axum",
  "bibulm-core",
+ "bibulm-hardware",
  "bibulm-link",
  "bibulm-models",
  "bibulm-runtime",

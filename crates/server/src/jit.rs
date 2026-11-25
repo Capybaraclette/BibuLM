@@ -1,5 +1,6 @@
 use axum::http::StatusCode;
 use bibulm_core::{AppSettings, Database, LiveMemoryContext, LoadConfig, canonical_file_within};
+use bibulm_hardware::{HardwareMonitor, LiveMemoryBudget, TelemetrySnapshot};
 use bibulm_link::{LinkManager, RemotePeer};
 use bibulm_models::{LocalModelEntry, scan_local_models_with_external};
 use bibulm_runtime::{LoadedModelInfo, ModelSupervisor};
@@ -34,6 +35,41 @@ pub struct LinkHardwareSnapshot {
 }
 
 impl LinkHardwareSnapshot {
+    /// Static hardware capabilities plus the current memory sample.
+    pub fn from_monitor(hw: &mut HardwareMonitor, disabled_gpu_ids: &[u32]) -> Self {
+        let prof = hw.profile();
+        let nv = prof.gpus.iter().find(|g| g.vendor == "NVIDIA");
+        let mut snap = Self {
+            gpu_summary: prof.format_summary(),
+            cpu_logical_cores: prof.cpu.logical_cores as u32,
+            has_nvidia: nv.is_some(),
+            nvidia_cuda_major: nv.and_then(|g| g.cuda_version_major),
+            nvidia_cuda_minor: nv.and_then(|g| g.cuda_version_minor),
+            has_amd_gpu: prof.gpus.iter().any(|g| g.vendor == "AMD"),
+            has_intel_gpu: prof.gpus.iter().any(|g| g.vendor == "Intel"),
+            has_any_gpu: !prof.gpus.is_empty(),
+            has_avx512: prof.cpu.has_avx512,
+            has_avx2: prof.cpu.has_avx2,
+            ..Default::default()
+        };
+        let sample = hw.sample(disabled_gpu_ids);
+        let budget = hw.memory_budget(disabled_gpu_ids);
+        snap.apply_sample(&sample, &budget);
+        snap
+    }
+
+    /// Refreshes the live memory fields from a telemetry sample.
+    pub fn apply_sample(&mut self, s: &TelemetrySnapshot, budget: &LiveMemoryBudget) {
+        const MIB: f64 = 1024.0 * 1024.0;
+        self.vram_used_mib = s.vram_used_bytes as f64 / MIB;
+        self.vram_used_avg_mib = budget.vram_used_avg_mib;
+        self.vram_total_mib = s.vram_total_bytes as f64 / MIB;
+        self.ram_used_mib = s.ram_used_bytes as f64 / MIB;
+        self.ram_used_avg_mib = budget.ram_used_avg_mib;
+        self.ram_total_mib = s.ram_total_bytes as f64 / MIB;
+        self.vram_sample_count = budget.sample_count;
+    }
+
     /// Hardware capabilities used to pick compatible `llama.cpp` runtime builds.
     pub fn to_runtime_match_context(&self) -> bibulm_runtime::HardwareMatchContext {
         bibulm_runtime::HardwareMatchContext {

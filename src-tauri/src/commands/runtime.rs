@@ -7,7 +7,7 @@ use bibulm_core::{
 };
 use bibulm_models::{DownloadJobState, JobKind, JobStatus};
 use bibulm_runtime::{
-    DiscoveredCliFlag, HardwareMatchContext, LlamaRelease, LlamaServerMetrics, LoadedModelInfo,
+    DiscoveredCliFlag, LlamaRelease, LlamaServerMetrics, LoadedModelInfo,
     RuntimeBackendVariant, ServerLogEntry, discover_runtime_cli_flags, fetch_llama_cpp_releases,
     fetch_llama_server_metrics, install_runtime_variant, register_custom_runtime, uninstall_runtime,
 };
@@ -20,21 +20,7 @@ pub async fn fetch_github_releases(
     state: State<'_, AppState>,
 ) -> Result<Vec<LlamaRelease>, String> {
     let token = state.settings.read().await.github_token.clone();
-    let hw_ctx = {
-        let hw = state.hardware.lock().map_err(|_| "Hardware mutex poisoned")?;
-        let prof = hw.profile();
-        let nv = prof.gpus.iter().find(|g| g.vendor == "NVIDIA");
-        HardwareMatchContext {
-            has_nvidia: nv.is_some(),
-            nvidia_cuda_major: nv.and_then(|g| g.cuda_version_major),
-            nvidia_cuda_minor: nv.and_then(|g| g.cuda_version_minor),
-            has_amd_gpu: prof.gpus.iter().any(|g| g.vendor == "AMD"),
-            has_intel_gpu: prof.gpus.iter().any(|g| g.vendor == "Intel"),
-            has_any_gpu: !prof.gpus.is_empty(),
-            has_avx512: prof.cpu.has_avx512,
-            has_avx2: prof.cpu.has_avx2,
-        }
-    };
+    let hw_ctx = state.link_hw_snapshot.read().await.to_runtime_match_context();
     fetch_llama_cpp_releases(token.as_deref(), &hw_ctx)
         .await
         .map_err(|e| e.to_string())

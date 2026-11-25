@@ -451,7 +451,7 @@ pub async fn cmd_runtime(node: &HeadlessNode, cmd: RuntimeCmd, json_out: bool) -
             }
         }
         RuntimeCmd::Releases => {
-            let hw = node.hardware_match_context();
+            let hw = node.hardware_match_context().await;
             let releases =
                 bibulm_runtime::fetch_llama_cpp_releases(settings.github_token.as_deref(), &hw)
                     .await
@@ -475,7 +475,7 @@ pub async fn cmd_runtime(node: &HeadlessNode, cmd: RuntimeCmd, json_out: bool) -
             }
         }
         RuntimeCmd::Install { tag, backend } => {
-            let hw = node.hardware_match_context();
+            let hw = node.hardware_match_context().await;
             let releases =
                 bibulm_runtime::fetch_llama_cpp_releases(settings.github_token.as_deref(), &hw)
                     .await

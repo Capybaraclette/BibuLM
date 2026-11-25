@@ -51,43 +51,10 @@ impl AppState {
         let initial_link_cfg = settings_val.link.clone();
         let settings = Arc::new(RwLock::new(settings_val));
         let mut hw_monitor = HardwareMonitor::new();
-        let gpu_summary = hw_monitor.profile().format_summary();
-        let cpu_logical_cores = hw_monitor.profile().cpu.logical_cores as u32;
-        let initial_sample = hw_monitor.sample(&[]);
-        let initial_budget = hw_monitor.memory_budget(&[]);
-        let (has_nvidia, nvidia_cuda_major, nvidia_cuda_minor, has_amd_gpu, has_intel_gpu) = {
-            let prof = hw_monitor.profile();
-            let nv = prof.gpus.iter().find(|g| g.vendor == "NVIDIA");
-            (
-                nv.is_some(),
-                nv.and_then(|g| g.cuda_version_major),
-                nv.and_then(|g| g.cuda_version_minor),
-                prof.gpus.iter().any(|g| g.vendor == "AMD"),
-                prof.gpus.iter().any(|g| g.vendor == "Intel"),
-            )
-        };
-        let has_any_gpu = !hw_monitor.profile().gpus.is_empty();
-        let has_avx512 = hw_monitor.profile().cpu.has_avx512;
-        let has_avx2 = hw_monitor.profile().cpu.has_avx2;
-        let link_hw_snapshot = Arc::new(RwLock::new(LinkHardwareSnapshot {
-            gpu_summary,
-            cpu_logical_cores,
-            vram_used_mib: initial_sample.vram_used_bytes as f64 / (1024.0 * 1024.0),
-            vram_used_avg_mib: initial_budget.vram_used_avg_mib,
-            vram_total_mib: initial_sample.vram_total_bytes as f64 / (1024.0 * 1024.0),
-            ram_used_mib: initial_sample.ram_used_bytes as f64 / (1024.0 * 1024.0),
-            ram_used_avg_mib: initial_budget.ram_used_avg_mib,
-            ram_total_mib: initial_sample.ram_total_bytes as f64 / (1024.0 * 1024.0),
-            vram_sample_count: initial_budget.sample_count,
-            has_nvidia,
-            nvidia_cuda_major,
-            nvidia_cuda_minor,
-            has_amd_gpu,
-            has_intel_gpu,
-            has_any_gpu,
-            has_avx512,
-            has_avx2,
-        }));
+        let link_hw_snapshot = Arc::new(RwLock::new(LinkHardwareSnapshot::from_monitor(
+            &mut hw_monitor,
+            &[],
+        )));
 
         let hardware = Arc::new(Mutex::new(hw_monitor));
         let supervisor = Arc::new(ModelSupervisor::new());

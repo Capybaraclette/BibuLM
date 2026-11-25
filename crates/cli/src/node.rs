@@ -23,34 +23,6 @@ pub struct HeadlessNode {
     pub gateway: Arc<ApiGateway>,
 }
 
-/// Builds the static (hardware capability) part of the Link snapshot.
-fn snapshot_from_monitor(hw: &mut HardwareMonitor, disabled: &[u32]) -> LinkHardwareSnapshot {
-    let prof = hw.profile().clone();
-    let sample = hw.sample(disabled);
-    let budget = hw.memory_budget(disabled);
-    let nv = prof.gpus.iter().find(|g| g.vendor == "NVIDIA");
-    const MIB: f64 = 1024.0 * 1024.0;
-    LinkHardwareSnapshot {
-        gpu_summary: prof.format_summary(),
-        cpu_logical_cores: prof.cpu.logical_cores as u32,
-        vram_used_mib: sample.vram_used_bytes as f64 / MIB,
-        vram_used_avg_mib: budget.vram_used_avg_mib,
-        vram_total_mib: sample.vram_total_bytes as f64 / MIB,
-        ram_used_mib: sample.ram_used_bytes as f64 / MIB,
-        ram_used_avg_mib: budget.ram_used_avg_mib,
-        ram_total_mib: sample.ram_total_bytes as f64 / MIB,
-        vram_sample_count: budget.sample_count,
-        has_nvidia: nv.is_some(),
-        nvidia_cuda_major: nv.and_then(|g| g.cuda_version_major),
-        nvidia_cuda_minor: nv.and_then(|g| g.cuda_version_minor),
-        has_amd_gpu: prof.gpus.iter().any(|g| g.vendor == "AMD"),
-        has_intel_gpu: prof.gpus.iter().any(|g| g.vendor == "Intel"),
-        has_any_gpu: !prof.gpus.is_empty(),
-        has_avx512: prof.cpu.has_avx512,
-        has_avx2: prof.cpu.has_avx2,
-    }
-}
-
 impl HeadlessNode {
     /// Opens (creating if needed) the data directory and wires every subsystem together.
     pub fn open() -> anyhow::Result<Self> {
@@ -78,7 +50,7 @@ impl HeadlessNode {
         let settings = Arc::new(RwLock::new(settings_val));
 
         let mut monitor = HardwareMonitor::new();
-        let snapshot = snapshot_from_monitor(&mut monitor, &disabled);
+        let snapshot = LinkHardwareSnapshot::from_monitor(&mut monitor, &disabled);
         let hw_snapshot = Arc::new(RwLock::new(snapshot));
         let hardware = Arc::new(Mutex::new(monitor));
 
@@ -106,23 +78,8 @@ impl HeadlessNode {
     }
 
     /// Hardware capabilities used to pick compatible llama.cpp builds.
-    pub fn hardware_match_context(&self) -> HardwareMatchContext {
-        let guard = self.hardware.lock();
-        let Ok(hw) = guard else {
-            return HardwareMatchContext::default();
-        };
-        let prof = hw.profile();
-        let nv = prof.gpus.iter().find(|g| g.vendor == "NVIDIA");
-        HardwareMatchContext {
-            has_nvidia: nv.is_some(),
-            nvidia_cuda_major: nv.and_then(|g| g.cuda_version_major),
-            nvidia_cuda_minor: nv.and_then(|g| g.cuda_version_minor),
-            has_amd_gpu: prof.gpus.iter().any(|g| g.vendor == "AMD"),
-            has_intel_gpu: prof.gpus.iter().any(|g| g.vendor == "Intel"),
-            has_any_gpu: !prof.gpus.is_empty(),
-            has_avx512: prof.cpu.has_avx512,
-            has_avx2: prof.cpu.has_avx2,
-        }
+    pub async fn hardware_match_context(&self) -> HardwareMatchContext {
+        self.hw_snapshot.read().await.to_runtime_match_context()
     }
 
     /// Total VRAM / RAM in bytes used for model fit verdicts.
@@ -178,16 +135,7 @@ impl HeadlessNode {
                 let _ = supervisor
                     .sync_live_telemetry(s.wddm_spillover_warning, shared_mib, &pid_mem)
                     .await;
-                {
-                    let mut lhw = snapshot.write().await;
-                    lhw.vram_used_mib = s.vram_used_bytes as f64 / MIB;
-                    lhw.vram_used_avg_mib = budget.vram_used_avg_mib;
-                    lhw.vram_total_mib = s.vram_total_bytes as f64 / MIB;
-                    lhw.ram_used_mib = s.ram_used_bytes as f64 / MIB;
-                    lhw.ram_used_avg_mib = budget.ram_used_avg_mib;
-                    lhw.ram_total_mib = s.ram_total_bytes as f64 / MIB;
-                    lhw.vram_sample_count = budget.sample_count;
-                }
+                snapshot.write().await.apply_sample(&s, &budget);
                 if epoch_changed {
                     link.notify_peers_state_changed();
                 }

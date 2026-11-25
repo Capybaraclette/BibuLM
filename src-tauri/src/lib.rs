@@ -295,16 +295,7 @@ pub fn run() {
                             .supervisor
                             .sync_live_telemetry(s.wddm_spillover_warning, shared_mib, &pid_mem)
                             .await;
-                        {
-                            let mut lhw = state.link_hw_snapshot.write().await;
-                            lhw.vram_used_mib = s.vram_used_bytes as f64 / (1024.0 * 1024.0);
-                            lhw.vram_used_avg_mib = budget.vram_used_avg_mib;
-                            lhw.vram_total_mib = s.vram_total_bytes as f64 / (1024.0 * 1024.0);
-                            lhw.ram_used_mib = s.ram_used_bytes as f64 / (1024.0 * 1024.0);
-                            lhw.ram_used_avg_mib = budget.ram_used_avg_mib;
-                            lhw.ram_total_mib = s.ram_total_bytes as f64 / (1024.0 * 1024.0);
-                            lhw.vram_sample_count = budget.sample_count;
-                        }
+                        state.link_hw_snapshot.write().await.apply_sample(&s, &budget);
                         if tel_handle.get_webview_window("main").is_some() {
                             let _ = tel_handle.emit("telemetry-update", &s);
                             if changed || epoch_changed {
