@@ -1,11 +1,10 @@
 use super::hardware::compute_live_memory_context;
 use crate::state::AppState;
-use chrono::Utc;
 use bibulm_core::{
     AppSettings, GuardrailLevel, InstalledRuntimeRecord, LoadConfig,
     estimate_memory_usage_with_context, parse_gguf_file,
 };
-use bibulm_models::{DownloadJobState, JobKind, JobStatus};
+use bibulm_models::DownloadJobState;
 use bibulm_runtime::{
     DiscoveredCliFlag, LlamaRelease, LlamaServerMetrics, LoadedModelInfo,
     RuntimeBackendVariant, ServerLogEntry, discover_runtime_cli_flags, fetch_llama_cpp_releases,
@@ -13,7 +12,6 @@ use bibulm_runtime::{
 };
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, State};
-use uuid::Uuid;
 
 #[tauri::command]
 pub async fn fetch_github_releases(
@@ -41,19 +39,14 @@ pub async fn install_runtime(
     release_notes: Option<String>,
 ) -> Result<InstalledRuntimeRecord, String> {
     let settings = state.settings.read().await.clone();
-    let job_id = format!("rt-{}", Uuid::new_v4());
-    let title = format!("llama.cpp {} ({})", variant.tag, variant.backend);
-    let created_at = Utc::now().to_rfc3339();
-    let total_bytes = variant.total_size_bytes;
-    let dest_dir = settings.runtimes_dir.join(&variant.id);
+    let base_job = DownloadJobState::runtime_install(
+        format!("llama.cpp {} ({})", variant.tag, variant.backend),
+        settings.runtimes_dir.join(&variant.id).to_string_lossy().into_owned(),
+        variant.total_size_bytes,
+    );
 
-    let downloads = state.downloads.clone();
     let app_clone = app.clone();
-    let job_id_c = job_id.clone();
-    let title_c = title.clone();
-    let created_c = created_at.clone();
-    let dest_str = dest_dir.to_string_lossy().into_owned();
-
+    let progress_base = base_job.clone();
     let res = install_runtime_variant(
         &state.db,
         &settings.runtimes_dir,
@@ -61,81 +54,23 @@ pub async fn install_runtime(
         release_notes,
         settings.github_token.as_deref(),
         move |prog| {
-            let snap = DownloadJobState {
-                id: job_id_c.clone(),
-                kind: JobKind::Runtime,
-                title: title_c.clone(),
-                repo_id: Some("ggml-org/llama.cpp".to_string()),
-                dest_dir: dest_str.clone(),
-                files: Vec::new(),
-                current_file: Some(prog.stage),
-                total_bytes: prog.total_bytes,
-                downloaded_bytes: prog.downloaded_bytes,
-                speed_bytes_per_sec: 0.0,
-                eta_seconds: None,
-                status: JobStatus::Downloading,
-                error: None,
-                created_at: created_c.clone(),
-                completed_at: None,
-            };
+            let snap = progress_base.with_progress(prog.stage, prog.downloaded_bytes, prog.total_bytes);
             let _ = app_clone.emit("download-progress", &snap);
         },
     )
     .await;
 
-    match res {
-        Ok(rec) => {
-            downloads
-                .record_external_job(DownloadJobState {
-                    id: job_id,
-                    kind: JobKind::Runtime,
-                    title,
-                    repo_id: Some("ggml-org/llama.cpp".to_string()),
-                    dest_dir: rec.install_dir.clone(),
-                    files: Vec::new(),
-                    current_file: None,
-                    total_bytes,
-                    downloaded_bytes: total_bytes,
-                    speed_bytes_per_sec: 0.0,
-                    eta_seconds: None,
-                    status: JobStatus::Completed,
-                    error: None,
-                    created_at,
-                    completed_at: Some(Utc::now().to_rfc3339()),
-                })
-                .await;
+    let outcome = res.as_ref().map(|rec| rec.install_dir.clone()).map_err(|e| e.to_string());
+    state.downloads.record_external_job(base_job.finished(outcome)).await;
+    let rec = res.map_err(|e| e.to_string())?;
 
-            // Automatically select as active runtime if none is set yet
-            let mut s = state.settings.write().await;
-            if s.active_runtime_id.is_none() {
-                s.active_runtime_id = Some(rec.id.clone());
-                let _ = state.db.save_settings(&s);
-            }
-            Ok(rec)
-        }
-        Err(e) => {
-            downloads
-                .record_external_job(DownloadJobState {
-                    id: job_id,
-                    kind: JobKind::Runtime,
-                    title,
-                    repo_id: Some("ggml-org/llama.cpp".to_string()),
-                    dest_dir: dest_dir.to_string_lossy().into_owned(),
-                    files: Vec::new(),
-                    current_file: None,
-                    total_bytes,
-                    downloaded_bytes: 0,
-                    speed_bytes_per_sec: 0.0,
-                    eta_seconds: None,
-                    status: JobStatus::Failed,
-                    error: Some(e.to_string()),
-                    created_at,
-                    completed_at: None,
-                })
-                .await;
-            Err(e.to_string())
-        }
+    // Automatically select as active runtime if none is set yet
+    let mut s = state.settings.write().await;
+    if s.active_runtime_id.is_none() {
+        s.active_runtime_id = Some(rec.id.clone());
+        let _ = state.db.save_settings(&s);
     }
+    Ok(rec)
 }
 
 #[tauri::command]

@@ -127,6 +127,57 @@ pub struct DownloadJobState {
     pub completed_at: Option<String>,
 }
 
+impl DownloadJobState {
+    /// A llama.cpp runtime install shown in the downloads list; the installer reports progress.
+    pub fn runtime_install(title: String, dest_dir: String, total_bytes: u64) -> Self {
+        Self {
+            id: format!("rt-{}", Uuid::new_v4()),
+            kind: JobKind::Runtime,
+            title,
+            repo_id: Some("ggml-org/llama.cpp".to_string()),
+            dest_dir,
+            files: Vec::new(),
+            current_file: Some("Starting...".to_string()),
+            total_bytes,
+            downloaded_bytes: 0,
+            speed_bytes_per_sec: 0.0,
+            eta_seconds: None,
+            status: JobStatus::Downloading,
+            error: None,
+            created_at: Utc::now().to_rfc3339(),
+            completed_at: None,
+        }
+    }
+
+    /// Progress snapshot with the installer's current stage and byte counts.
+    pub fn with_progress(&self, stage: String, downloaded_bytes: u64, total_bytes: u64) -> Self {
+        Self {
+            current_file: Some(stage),
+            downloaded_bytes,
+            total_bytes,
+            ..self.clone()
+        }
+    }
+
+    /// Final state: completed into the install directory, or failed with the error.
+    pub fn finished(&self, outcome: Result<String, String>) -> Self {
+        let mut job = Self { current_file: None, ..self.clone() };
+        match outcome {
+            Ok(install_dir) => {
+                job.dest_dir = install_dir;
+                job.downloaded_bytes = job.total_bytes;
+                job.status = JobStatus::Completed;
+                job.completed_at = Some(Utc::now().to_rfc3339());
+            }
+            Err(e) => {
+                job.status = JobStatus::Failed;
+                job.error = Some(e);
+            }
+        }
+        job
+    }
+}
+
 struct ActiveControl {
     pause_flag: Arc<AtomicBool>,
     cancel_flag: Arc<AtomicBool>,

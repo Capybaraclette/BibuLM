@@ -29,7 +29,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, oneshot};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayStatus {
@@ -871,24 +870,12 @@ async fn link_install_runtime_handler(
         );
     }
 
-    let job_id = format!("rt-{}", Uuid::new_v4());
-    let base_job = DownloadJobState {
-        id: job_id.clone(),
-        kind: JobKind::Runtime,
-        title: format!("llama.cpp {} ({})", variant.tag, variant.backend),
-        repo_id: Some("ggml-org/llama.cpp".to_string()),
-        dest_dir: target_dest_dir,
-        files: Vec::new(),
-        current_file: Some("Starting...".to_string()),
-        total_bytes: variant.total_size_bytes,
-        downloaded_bytes: 0,
-        speed_bytes_per_sec: 0.0,
-        eta_seconds: None,
-        status: JobStatus::Downloading,
-        error: None,
-        created_at: Utc::now().to_rfc3339(),
-        completed_at: None,
-    };
+    let base_job = DownloadJobState::runtime_install(
+        format!("llama.cpp {} ({})", variant.tag, variant.backend),
+        target_dest_dir,
+        variant.total_size_bytes,
+    );
+    let job_id = base_job.id.clone();
     downloads.record_external_job(base_job.clone()).await;
 
     let task_ctx = (*ctx).clone();
@@ -908,10 +895,7 @@ async fn link_install_runtime_handler(
                 {
                     last = Some(std::time::Instant::now());
                     last_stage = p.stage.clone();
-                    let mut snap = fwd_base.clone();
-                    snap.current_file = Some(p.stage);
-                    snap.total_bytes = p.total_bytes;
-                    snap.downloaded_bytes = p.downloaded_bytes;
+                    let snap = fwd_base.with_progress(p.stage, p.downloaded_bytes, p.total_bytes);
                     fwd_downloads.update_external_progress(snap).await;
                 }
             }
@@ -930,15 +914,10 @@ async fn link_install_runtime_handler(
         .await;
         let _ = forwarder.await;
 
+        let outcome = res.as_ref().map(|rec| rec.install_dir.clone()).map_err(|e| e.to_string());
+        downloads.record_external_job(base_job.finished(outcome)).await;
         match res {
             Ok(rec) => {
-                let mut done = base_job.clone();
-                done.dest_dir = rec.install_dir.clone();
-                done.current_file = None;
-                done.downloaded_bytes = done.total_bytes;
-                done.status = JobStatus::Completed;
-                done.completed_at = Some(Utc::now().to_rfc3339());
-                downloads.record_external_job(done).await;
                 {
                     let mut s = task_ctx.settings.write().await;
                     if s.active_runtime_id.is_none() {
@@ -959,11 +938,6 @@ async fn link_install_runtime_handler(
                 }
             }
             Err(e) => {
-                let mut failed = base_job.clone();
-                failed.current_file = None;
-                failed.status = JobStatus::Failed;
-                failed.error = Some(e.to_string());
-                downloads.record_external_job(failed).await;
                 task_ctx
                     .supervisor
                     .push_log("ERROR", "LINK", format!("Remote runtime install failed: {e}"))
