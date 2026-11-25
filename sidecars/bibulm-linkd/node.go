@@ -158,7 +158,7 @@ func (n *LinkNode) Run(ctx context.Context) {
 }
 
 func (n *LinkNode) watchBus(ctx context.Context, lc *local.Client) {
-	watcher, err := lc.WatchIPNBus(ctx, ipn.NotifyInitialState|ipn.NotifyInitialNetMap)
+	watcher, err := lc.WatchIPNBus(ctx, ipn.NotifyInitialState)
 	if err != nil {
 		log.Printf("WatchIPNBus failed: %v", err)
 		return
@@ -209,10 +209,6 @@ func (n *LinkNode) watchBus(ctx context.Context, lc *local.Client) {
 				n.ensureMeshListener(ctx)
 				go n.RefreshPeers(ctx)
 			}
-		}
-
-		if notify.NetMap != nil && n.isConnected() {
-			n.syncStatusFromClient(ctx, lc)
 		}
 	}
 }
