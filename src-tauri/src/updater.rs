@@ -536,7 +536,8 @@ pub fn is_newer_version(current: &str, candidate: &str) -> bool {
 
 pub fn is_trusted_github_download_url(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
-    url.starts_with("https://github.com/Capybaraclette/bibulm/releases/download/")
+    // GitHub serves the repo as `Capybaraclette/BibuLM`; owner and repo names are case-insensitive.
+    lower.starts_with("https://github.com/capybaraclette/bibulm/releases/download/")
         && !lower.contains("..")
         && !lower.contains("%2e")
         && !lower.contains("%5c")
@@ -590,6 +591,9 @@ mod tests {
 
     #[test]
     fn trusted_url_validator_blocks_non_github_hosts() {
+        assert!(is_trusted_github_download_url(
+            "https://github.com/Capybaraclette/BibuLM/releases/download/v1.0.0/Bibulm_1.0.0_x64-setup.exe"
+        ));
         assert!(is_trusted_github_download_url(
             "https://github.com/Capybaraclette/bibulm/releases/download/v0.3.0/BibuLM_0.3.0_x64-setup.exe"
         ));

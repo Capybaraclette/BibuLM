@@ -328,7 +328,17 @@ async fn auth_middleware(
         return next.run(req).await;
     }
 
-    let require_auth = ctx.settings.read().await.server.require_auth;
+    let (serve_on_lan, require_auth) = {
+        let s = ctx.settings.read().await;
+        (s.server.serve_on_lan, s.server.require_auth)
+    };
+    // Blocks DNS rebinding: a web page whose domain resolves to 127.0.0.1 still sends its own Host.
+    if !serve_on_lan && !is_loopback_host(req.headers()) {
+        return openai_error(
+            StatusCode::FORBIDDEN,
+            "Host header must be localhost when LAN serving is disabled.",
+        );
+    }
     if !require_auth {
         return next.run(req).await;
     }
@@ -357,6 +367,20 @@ async fn auth_middleware(
             "Missing or invalid Bearer API key.",
         ),
     }
+}
+
+/// True for a missing Host (non-browser clients) or a loopback host name.
+fn is_loopback_host(headers: &HeaderMap) -> bool {
+    let Some(host) = headers.get(header::HOST) else {
+        return true;
+    };
+    host.to_str()
+        .ok()
+        .and_then(|h| h.parse::<axum::http::uri::Authority>().ok())
+        .is_some_and(|a| {
+            let name = a.host();
+            name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1" || name == "[::1]"
+        })
 }
 
 async fn health_handler(State(ctx): State<Arc<GatewayContext>>) -> Response {
@@ -1296,6 +1320,29 @@ mod tests {
         )
         .await;
         assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+        // 2b. DNS rebinding: foreign Host is refused even with a valid token, loopback Host passes
+        let rebind = send_req(
+            &mut app,
+            Request::builder()
+                .uri("/v1/models")
+                .header(header::HOST, "evil.example:1234")
+                .header(header::AUTHORIZATION, format!("Bearer {}", token.token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(rebind.status(), StatusCode::FORBIDDEN);
+        let loopback = send_req(
+            &mut app,
+            Request::builder()
+                .uri("/v1/models")
+                .header(header::HOST, "localhost:1234")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(loopback.status(), StatusCode::UNAUTHORIZED);
 
         // 3. /v1/models with valid Bearer token -> 200
         let ok = send_req(
