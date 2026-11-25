@@ -1,0 +1,35 @@
+# Headless Bibulm server. Usage:
+#   TS_AUTHKEY=tskey-auth-... docker compose up -d --build
+# Without TS_AUTHKEY, run `docker compose logs -f` and open the Tailscale login URL it prints.
+# Then open Bibulm Desktop > Link: the server appears as a peer you can manage remotely.
+
+services:
+  bibulm-server:
+    build: .
+    image: bibulm-server:latest
+    container_name: bibulm-server
+    restart: unless-stopped
+    ports:
+      - "1234:1234"
+    volumes:
+      - bibulm_data:/data
+    environment:
+      BIBULM_DEVICE_NAME: ${BIBULM_DEVICE_NAME:-bibulm-docker}
+      BIBULM_ACCESS_POLICY: ${BIBULM_ACCESS_POLICY:-self_only}
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    # --- NVIDIA GPU (requires nvidia-container-toolkit on the host) ---
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    # --- AMD / Intel GPU via Vulkan ---
+    # devices:
+    #   - /dev/dri:/dev/dri
+
+volumes:
+  bibulm_data:

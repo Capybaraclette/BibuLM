@@ -1,0 +1,39 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Frontend / Node / Tauri
+node_modules/
+ui/dist/
+ui/.vite/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/
+
+# Local runtime data, downloaded models & logs
+/data/
+/models/
+/runtimes/
+*.gguf
+*.gguf.part
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Environment & secrets
+.env
+.env.local
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+/screens
+ARCHITECTURE.md
+todo.md
+/.agents
+/graphify-out

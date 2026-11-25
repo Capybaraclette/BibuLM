@@ -1,0 +1,179 @@
+name: Release Multi-Platform Builds
+
+on:
+  push:
+    tags:
+      - "v*"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.2.0). Leave empty when triggered by tag push."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis,msi
+            goos: windows
+            goarch: amd64
+            ext: ".exe"
+
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+            goos: linux
+            goarch: amd64
+            ext: ""
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Setup Go (for bibulm-linkd tsnet sidecar)
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: sidecars/bibulm-linkd/go.mod
+          cache: false
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf \
+            libssl-dev \
+            pkg-config \
+            rpm
+
+      - name: Install frontend dependencies & build UI
+        run: |
+          npm --prefix ui ci
+          npm --prefix ui run build
+
+      - name: Test & Build bibulm-linkd sidecar (${{ matrix.name }})
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p src-tauri/binaries
+          cd sidecars/bibulm-linkd
+          go mod tidy
+          go test ./...
+          go build -trimpath -ldflags="-s -w" -o "../../src-tauri/binaries/bibulm-linkd-${{ matrix.target }}${{ matrix.ext }}" .
+
+      - name: Run Rust workspace tests
+        run: cargo test --workspace
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build Tauri bundles (${{ matrix.name }})
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: cargo tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config src-tauri/tauri.bundle-link.conf.json
+
+      - name: Collect Windows artifacts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          $base = "target/${{ matrix.target }}/release/bundle"
+          Get-ChildItem -Path "$base/nsis/*.exe" -ErrorAction SilentlyContinue | Copy-Item -Destination release-assets/
+          Get-ChildItem -Path "$base/msi/*.msi" -ErrorAction SilentlyContinue | Copy-Item -Destination release-assets/
+          Get-ChildItem release-assets
+
+      - name: Collect Linux artifacts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          BASE="target/${{ matrix.target }}/release/bundle"
+          cp "$BASE"/deb/*.deb release-assets/ 2>/dev/null || true
+          cp "$BASE"/rpm/*.rpm release-assets/ 2>/dev/null || true
+          cp "$BASE"/appimage/*.AppImage release-assets/ 2>/dev/null || true
+          ls -la release-assets
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-assets-${{ matrix.name }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-assets-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate unified SHA256SUMS.txt
+        run: |
+          cd release-assets
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ github.event.release.tag_name }}" ]; then
+            echo "name=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: Bibulm ${{ steps.tag.outputs.name }}
+          generate_release_notes: true
+          files: |
+            release-assets/*

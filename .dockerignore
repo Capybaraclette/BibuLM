@@ -1,0 +1,10 @@
+target/
+ui/node_modules/
+ui/dist/
+graphify-out/
+.git/
+.github/
+.agents/
+src-tauri/binaries/
+src-tauri/gen/
+*.db
