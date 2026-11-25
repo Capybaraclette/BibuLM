@@ -1,5 +1,5 @@
 use axum::http::StatusCode;
-use bibulm_core::{AppSettings, Database, LiveMemoryContext, LoadConfig};
+use bibulm_core::{AppSettings, Database, LiveMemoryContext, LoadConfig, canonical_within};
 use bibulm_link::{LinkManager, RemotePeer};
 use bibulm_models::{LocalModelEntry, scan_local_models_with_external};
 use bibulm_runtime::{LoadedModelInfo, ModelSupervisor};
@@ -520,19 +520,17 @@ impl GatewayContext {
             let is_known_mmproj = all_locals
                 .iter()
                 .any(|m| m.mmproj_path.as_ref().is_some_and(|p| p == mm));
-            // canonicalize resolves `..` and symlinks, which a plain starts_with would let through.
-            let in_allowed_root = mm
-                .extension()
-                .and_then(|s| s.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
-                && std::fs::canonicalize(mm).is_ok_and(|c| {
-                    c.is_file()
-                        && cfg_snap.models_dirs.iter().any(|root| {
-                            std::fs::canonicalize(root).is_ok_and(|r| c.starts_with(r))
-                        })
-                });
-            if !is_paired && !is_known_mmproj && !in_allowed_root {
-                load_cfg.mmproj_path = local.mmproj_path.clone();
+            if !is_paired && !is_known_mmproj {
+                let is_gguf = mm
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
+                // Use the canonical path, so the file checked is the file llama-server opens.
+                load_cfg.mmproj_path = is_gguf
+                    .then(|| canonical_within(mm, &cfg_snap.models_dirs))
+                    .flatten()
+                    .filter(|c| c.is_file())
+                    .or_else(|| local.mmproj_path.clone());
             }
         }
 
@@ -693,28 +691,14 @@ impl GatewayContext {
 }
 
 fn is_allowed_template_file(path: &PathBuf, models_dirs: &[PathBuf]) -> bool {
-    let Ok(canon) = std::fs::canonicalize(path) else {
-        return false;
-    };
-    if !canon.is_file() {
-        return false;
-    }
-    let ext_ok = canon
-        .extension()
-        .and_then(|s| s.to_str())
-        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "jinja" | "j2" | "txt" | "tmpl"));
-    if !ext_ok {
-        return false;
-    }
     let templates_dir = bibulm_core::default_data_dir().join("templates");
-    models_dirs
-        .iter()
-        .chain(std::iter::once(&templates_dir))
-        .any(|root| {
-            std::fs::canonicalize(root)
-                .map(|r| canon.starts_with(r))
-                .unwrap_or(false)
-        })
+    let roots = models_dirs.iter().chain(std::iter::once(&templates_dir));
+    canonical_within(path, roots).is_some_and(|canon| {
+        canon.is_file()
+            && canon.extension().and_then(|s| s.to_str()).is_some_and(|e| {
+                matches!(e.to_ascii_lowercase().as_str(), "jinja" | "j2" | "txt" | "tmpl")
+            })
+    })
 }
 
 fn is_safe_remote_cli_flag(flag: &str) -> bool {

@@ -14,7 +14,7 @@ pub fn current_app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AppUpdateInfo {
     pub current_version: String,
     pub latest_version: String,

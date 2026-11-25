@@ -752,19 +752,22 @@ async fn require_remote_manage(
 
 /// Only official `ggml-org/llama.cpp` release assets may be installed remotely.
 pub fn is_valid_llama_release_url(url: &str) -> bool {
-    url.starts_with("https://github.com/ggml-org/llama.cpp/releases/download/")
-        && !escapes_url_prefix(url)
+    is_https_url_under(url, &["github.com"], "/ggml-org/llama.cpp/releases/download/")
 }
 
 /// Only HuggingFace-hosted files may be downloaded remotely.
 pub fn is_valid_hf_download_url(url: &str) -> bool {
-    (url.starts_with("https://huggingface.co/") || url.starts_with("https://hf.co/"))
-        && !escapes_url_prefix(url)
+    is_https_url_under(url, &["huggingface.co", "hf.co"], "/")
 }
 
-/// URL parsing resolves `..`, `%2e%2e` and `\` segments, which would escape a checked path prefix.
-fn escapes_url_prefix(url: &str) -> bool {
-    url.contains("..") || url.contains('\\') || url.to_ascii_lowercase().contains("%2e")
+/// Checks the URL as reqwest will request it: parsing resolves `..`, `%2e` and `\` first.
+fn is_https_url_under(raw: &str, hosts: &[&str], path_prefix: &str) -> bool {
+    reqwest::Url::parse(raw).is_ok_and(|u| {
+        u.scheme() == "https"
+            && u.port().is_none()
+            && u.host_str().is_some_and(|h| hosts.contains(&h))
+            && u.path().starts_with(path_prefix)
+    })
 }
 
 pub fn is_safe_single_filename(name: &str) -> bool {
@@ -1165,14 +1168,8 @@ async fn link_delete_model_handler(
         );
     };
     // Only models inside this device's configured model directories may be deleted remotely.
-    let canon = std::fs::canonicalize(&local.path).ok();
-    let in_managed_dir = canon.as_ref().is_some_and(|c| {
-        settings.models_dirs.iter().any(|root| {
-            std::fs::canonicalize(root)
-                .map(|r| c.starts_with(r))
-                .unwrap_or(false)
-        })
-    });
+    let in_managed_dir =
+        bibulm_core::canonical_within(&local.path, &settings.models_dirs).is_some();
     if !in_managed_dir {
         return openai_error(
             StatusCode::FORBIDDEN,

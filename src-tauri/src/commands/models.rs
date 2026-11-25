@@ -246,11 +246,7 @@ pub async fn read_text_file_preview(
                 allowed_roots.push(ext.path);
             }
         }
-        let in_allowed_root = allowed_roots.iter().any(|root| {
-            std::fs::canonicalize(root)
-                .map(|r| canon.starts_with(r))
-                .unwrap_or(false)
-        });
+        let in_allowed_root = bibulm_core::canonical_within(&canon, &allowed_roots).is_some();
         if !in_allowed_root {
             return Err("Access denied: file is outside configured model/template directories.".to_string());
         }

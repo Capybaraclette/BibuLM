@@ -2,7 +2,7 @@ use crate::{SamplingParams, ServerConfig};
 use directories::{BaseDirs, ProjectDirs, UserDirs};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn default_true() -> bool {
     true
@@ -176,6 +176,18 @@ impl AppSettings {
 
 /// Resolves the platform-appropriate persistent data directory for Bibulm.
 /// Respects `BIBULM_DATA_DIR` when set and non-empty.
+/// Canonical form of `path` when it resolves (after `..` and symlinks) inside one of `roots`.
+pub fn canonical_within<'a>(
+    path: &Path,
+    roots: impl IntoIterator<Item = &'a PathBuf>,
+) -> Option<PathBuf> {
+    let canon = std::fs::canonicalize(path).ok()?;
+    roots
+        .into_iter()
+        .any(|root| std::fs::canonicalize(root).is_ok_and(|r| canon.starts_with(r)))
+        .then_some(canon)
+}
+
 pub fn default_data_dir() -> PathBuf {
     if let Ok(override_dir) = std::env::var("BIBULM_DATA_DIR") {
         let trimmed = override_dir.trim();
