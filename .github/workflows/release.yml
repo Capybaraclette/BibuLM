@@ -39,6 +39,14 @@ jobs:
             goarch: amd64
             ext: ""
 
+          - name: macos-aarch64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            bundles: dmg
+            goos: darwin
+            goarch: arm64
+            ext: ""
+
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -130,6 +138,15 @@ jobs:
           cp "$BASE"/deb/*.deb release-assets/ 2>/dev/null || true
           cp "$BASE"/rpm/*.rpm release-assets/ 2>/dev/null || true
           cp "$BASE"/appimage/*.AppImage release-assets/ 2>/dev/null || true
+          ls -la release-assets
+
+      - name: Collect macOS artifacts
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          BASE="target/${{ matrix.target }}/release/bundle"
+          cp "$BASE"/dmg/*.dmg release-assets/ 2>/dev/null || true
           ls -la release-assets
 
       - name: Upload platform artifacts
