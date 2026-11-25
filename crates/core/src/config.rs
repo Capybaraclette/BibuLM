@@ -2,7 +2,7 @@ use crate::{SamplingParams, ServerConfig};
 use directories::{BaseDirs, ProjectDirs, UserDirs};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn default_true() -> bool {
     true
@@ -176,6 +176,25 @@ impl AppSettings {
 
 /// Resolves the platform-appropriate persistent data directory for BibuLM.
 /// Respects `BIBULM_DATA_DIR` when set and non-empty.
+/// Canonical form of `path` when it is an existing file inside one of `roots` (after resolving
+/// `..` and symlinks) and, unless `exts` is empty, has one of those extensions.
+pub fn canonical_file_within<'a>(
+    path: &Path,
+    roots: impl IntoIterator<Item = &'a PathBuf>,
+    exts: &[&str],
+) -> Option<PathBuf> {
+    let canon = std::fs::canonicalize(path).ok()?;
+    let ext_ok = exts.is_empty()
+        || canon
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)));
+    let in_root = roots
+        .into_iter()
+        .any(|root| std::fs::canonicalize(root).is_ok_and(|r| canon.starts_with(r)));
+    (canon.is_file() && ext_ok && in_root).then_some(canon)
+}
+
 pub fn default_data_dir() -> PathBuf {
     if let Ok(override_dir) = std::env::var("BIBULM_DATA_DIR") {
         let trimmed = override_dir.trim();
@@ -192,23 +211,6 @@ pub fn default_data_dir() -> PathBuf {
     PathBuf::from("./data")
 }
 
-/// Resolves the pre-rebrand persistent data directory, if present, for one-time DB migration.
-pub fn legacy_data_dir() -> Option<PathBuf> {
-    if let Some(proj) = ProjectDirs::from("com", "ruststudio", "rustStudio") {
-        let dir = proj.data_local_dir().to_path_buf();
-        if dir.is_dir() {
-            return Some(dir);
-        }
-    }
-    if let Some(user) = UserDirs::new() {
-        let dir = user.home_dir().join(".ruststudio");
-        if dir.is_dir() {
-            return Some(dir);
-        }
-    }
-    None
-}
-
 /// Discovers model directories managed by other local AI applications (Ollama, LM Studio,
 /// Jan, GPT4All, llama.cpp cache, HuggingFace Hub cache, AnythingLLM, Msty, Backyard AI, etc.).
 pub fn discover_external_model_sources() -> Vec<ExternalModelSource> {
@@ -219,11 +221,6 @@ pub fn discover_external_model_sources() -> Vec<ExternalModelSource> {
         .as_ref()
         .map(|u| u.home_dir().to_path_buf())
         .or_else(|| base_dirs.as_ref().map(|b| b.home_dir().to_path_buf()));
-
-    // Legacy rustStudio data/models
-    if let Some(old_dir) = legacy_data_dir() {
-        candidates.push(("rustStudio", old_dir.join("models"), ExternalSourceKind::GgufDir));
-    }
 
     // LM Studio (custom downloadsFolder in ~/.lmstudio/settings.json + default locations)
     if let Some(h) = &home {
@@ -442,4 +439,27 @@ pub fn discover_external_model_sources() -> Vec<ExternalModelSource> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_file_within_rejects_escapes_and_wrong_extensions() {
+        let base = std::env::temp_dir().join(format!("bibulm-cfw-{}", uuid::Uuid::new_v4()));
+        let root = base.join("models");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("m.gguf"), b"x").unwrap();
+        std::fs::write(base.join("outside.gguf"), b"x").unwrap();
+        let roots = vec![root.clone()];
+
+        assert!(canonical_file_within(&root.join("m.gguf"), &roots, &["gguf"]).is_some());
+        assert!(canonical_file_within(&root.join("m.gguf"), &roots, &["jinja"]).is_none());
+        assert!(canonical_file_within(&root.join("m.gguf"), &roots, &[]).is_some());
+        assert!(canonical_file_within(&root.join("../outside.gguf"), &roots, &["gguf"]).is_none());
+        assert!(canonical_file_within(&root, &roots, &[]).is_none());
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 }

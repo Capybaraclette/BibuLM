@@ -1,40 +1,24 @@
 use super::hardware::compute_live_memory_context;
 use crate::state::AppState;
-use chrono::Utc;
 use bibulm_core::{
     AppSettings, GuardrailLevel, InstalledRuntimeRecord, LoadConfig,
     estimate_memory_usage_with_context, parse_gguf_file,
 };
 use bibulm_models::DownloadJobState;
 use bibulm_runtime::{
-    DiscoveredCliFlag, HardwareMatchContext, LlamaRelease, LlamaServerMetrics, LoadedModelInfo,
+    DiscoveredCliFlag, LlamaRelease, LlamaServerMetrics, LoadedModelInfo,
     RuntimeBackendVariant, ServerLogEntry, discover_runtime_cli_flags, fetch_llama_cpp_releases,
     fetch_llama_server_metrics, install_runtime_variant, register_custom_runtime, uninstall_runtime,
 };
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, State};
-use uuid::Uuid;
 
 #[tauri::command]
 pub async fn fetch_github_releases(
     state: State<'_, AppState>,
 ) -> Result<Vec<LlamaRelease>, String> {
     let token = state.settings.read().await.github_token.clone();
-    let hw_ctx = {
-        let hw = state.hardware.lock().map_err(|_| "Hardware mutex poisoned")?;
-        let prof = hw.profile();
-        let nv = prof.gpus.iter().find(|g| g.vendor == "NVIDIA");
-        HardwareMatchContext {
-            has_nvidia: nv.is_some(),
-            nvidia_cuda_major: nv.and_then(|g| g.cuda_version_major),
-            nvidia_cuda_minor: nv.and_then(|g| g.cuda_version_minor),
-            has_amd_gpu: prof.gpus.iter().any(|g| g.vendor == "AMD"),
-            has_intel_gpu: prof.gpus.iter().any(|g| g.vendor == "Intel"),
-            has_any_gpu: !prof.gpus.is_empty(),
-            has_avx512: prof.cpu.has_avx512,
-            has_avx2: prof.cpu.has_avx2,
-        }
-    };
+    let hw_ctx = state.link_hw_snapshot.read().await.to_runtime_match_context();
     fetch_llama_cpp_releases(token.as_deref(), &hw_ctx)
         .await
         .map_err(|e| e.to_string())
@@ -55,19 +39,14 @@ pub async fn install_runtime(
     release_notes: Option<String>,
 ) -> Result<InstalledRuntimeRecord, String> {
     let settings = state.settings.read().await.clone();
-    let job_id = format!("rt-{}", Uuid::new_v4());
-    let title = format!("llama.cpp {} ({})", variant.tag, variant.backend);
-    let created_at = Utc::now().to_rfc3339();
-    let total_bytes = variant.total_size_bytes;
-    let dest_dir = settings.runtimes_dir.join(&variant.id);
+    let base_job = DownloadJobState::runtime_install(
+        format!("llama.cpp {} ({})", variant.tag, variant.backend),
+        settings.runtimes_dir.join(&variant.id).to_string_lossy().into_owned(),
+        variant.total_size_bytes,
+    );
 
-    let downloads = state.downloads.clone();
     let app_clone = app.clone();
-    let job_id_c = job_id.clone();
-    let title_c = title.clone();
-    let created_c = created_at.clone();
-    let dest_str = dest_dir.to_string_lossy().into_owned();
-
+    let progress_base = base_job.clone();
     let res = install_runtime_variant(
         &state.db,
         &settings.runtimes_dir,
@@ -75,81 +54,23 @@ pub async fn install_runtime(
         release_notes,
         settings.github_token.as_deref(),
         move |prog| {
-            let snap = DownloadJobState {
-                id: job_id_c.clone(),
-                kind: "runtime".to_string(),
-                title: title_c.clone(),
-                repo_id: Some("ggml-org/llama.cpp".to_string()),
-                dest_dir: dest_str.clone(),
-                files: Vec::new(),
-                current_file: Some(prog.stage),
-                total_bytes: prog.total_bytes,
-                downloaded_bytes: prog.downloaded_bytes,
-                speed_bytes_per_sec: 0.0,
-                eta_seconds: None,
-                status: "downloading".to_string(),
-                error: None,
-                created_at: created_c.clone(),
-                completed_at: None,
-            };
+            let snap = progress_base.with_progress(prog.stage, prog.downloaded_bytes, prog.total_bytes);
             let _ = app_clone.emit("download-progress", &snap);
         },
     )
     .await;
 
-    match res {
-        Ok(rec) => {
-            downloads
-                .record_external_job(DownloadJobState {
-                    id: job_id,
-                    kind: "runtime".to_string(),
-                    title,
-                    repo_id: Some("ggml-org/llama.cpp".to_string()),
-                    dest_dir: rec.install_dir.clone(),
-                    files: Vec::new(),
-                    current_file: None,
-                    total_bytes,
-                    downloaded_bytes: total_bytes,
-                    speed_bytes_per_sec: 0.0,
-                    eta_seconds: None,
-                    status: "completed".to_string(),
-                    error: None,
-                    created_at,
-                    completed_at: Some(Utc::now().to_rfc3339()),
-                })
-                .await;
+    let outcome = res.as_ref().map(|rec| rec.install_dir.clone()).map_err(|e| e.to_string());
+    state.downloads.record_external_job(base_job.finished(outcome)).await;
+    let rec = res.map_err(|e| e.to_string())?;
 
-            // Automatically select as active runtime if none is set yet
-            let mut s = state.settings.write().await;
-            if s.active_runtime_id.is_none() {
-                s.active_runtime_id = Some(rec.id.clone());
-                let _ = state.db.save_settings(&s);
-            }
-            Ok(rec)
-        }
-        Err(e) => {
-            downloads
-                .record_external_job(DownloadJobState {
-                    id: job_id,
-                    kind: "runtime".to_string(),
-                    title,
-                    repo_id: Some("ggml-org/llama.cpp".to_string()),
-                    dest_dir: dest_dir.to_string_lossy().into_owned(),
-                    files: Vec::new(),
-                    current_file: None,
-                    total_bytes,
-                    downloaded_bytes: 0,
-                    speed_bytes_per_sec: 0.0,
-                    eta_seconds: None,
-                    status: "failed".to_string(),
-                    error: Some(e.to_string()),
-                    created_at,
-                    completed_at: None,
-                })
-                .await;
-            Err(e.to_string())
-        }
+    // Automatically select as active runtime if none is set yet
+    let mut s = state.settings.write().await;
+    if s.active_runtime_id.is_none() {
+        s.active_runtime_id = Some(rec.id.clone());
+        let _ = state.db.save_settings(&s);
     }
+    Ok(rec)
 }
 
 #[tauri::command]
@@ -377,24 +298,6 @@ pub async fn unload_model_cmd(
         state.link.notify_peers_state_changed();
     }
     Ok(ok)
-}
-
-#[tauri::command]
-pub async fn unload_all_models(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    state.supervisor.unload_all().await;
-    state.link.notify_peers_state_changed();
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    let disabled = state.settings.read().await.disabled_gpu_ids.clone();
-    let snap_opt = state
-        .hardware
-        .lock()
-        .ok()
-        .map(|mut hw| hw.reset_memory_average(&disabled));
-    if let Some(snap) = snap_opt {
-        let _ = app.emit("telemetry-update", &snap);
-    }
-    let _ = app.emit("loaded-models-changed", Vec::<LoadedModelInfo>::new());
-    Ok(())
 }
 
 #[tauri::command]

@@ -277,11 +277,21 @@ export const App: React.FC = () => {
       setTelemetry(ev.payload);
     }).then((fn) => unsubs.push(fn));
 
+    // A model load prints hundreds of lines: batch them into one re-render every 200 ms.
+    let pendingLogs: ServerLogEntry[] = [];
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    unsubs.push(() => {
+      if (flushTimer) clearTimeout(flushTimer);
+    });
     listen<ServerLogEntry>('server-log', (ev) => {
-      setLogs((prev) => {
-        const next = [...prev, ev.payload];
-        return next.length > 1500 ? next.slice(next.length - 1500) : next;
-      });
+      pendingLogs.push(ev.payload);
+      if (flushTimer) return;
+      flushTimer = setTimeout(() => {
+        const batch = pendingLogs;
+        pendingLogs = [];
+        flushTimer = null;
+        setLogs((prev) => [...prev, ...batch].slice(-1500));
+      }, 200);
     }).then((fn) => unsubs.push(fn));
 
     listen<LoadedModelInfo[]>('loaded-models-changed', (ev) => {

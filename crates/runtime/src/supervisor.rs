@@ -16,7 +16,7 @@ use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock, broadcast};
-use tracing::{info, warn};
+use tracing::info;
 
 const LOG_RING_CAPACITY: usize = 2000;
 
@@ -252,7 +252,7 @@ impl ModelSupervisor {
         if let (Some(job), Some(p)) = (&self.job_object, pid)
             && let Err(e) = job.assign_pid(p)
         {
-            warn!("Could not assign llama-server PID {p} to Windows Job Object: {e}");
+            tracing::warn!("Could not assign llama-server PID {p} to Windows Job Object: {e}");
         }
 
         let mut initial_placement = MemoryPlacementReport {

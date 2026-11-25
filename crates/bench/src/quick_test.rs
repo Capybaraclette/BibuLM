@@ -171,20 +171,8 @@ where
         }
     }
 
-    let client = reqwest::Client::new();
     let started = Instant::now();
-
-    let mut req_builder = client.post(endpoint_url).json(&body);
-    for (k, v) in extra_headers {
-        req_builder = req_builder.header(*k, *v);
-    }
-    let resp = req_builder.send().await?;
-    if !resp.status().is_success() {
-        return Err(BenchError::UpstreamStatus {
-            status: resp.status().as_u16(),
-            body: resp.text().await.unwrap_or_default(),
-        });
-    }
+    let resp = post_chat_stream(endpoint_url, &body, extra_headers).await?;
 
     let mut stream = resp.bytes_stream();
     let mut byte_buf: Vec<u8> = Vec::new();
@@ -194,29 +182,14 @@ where
     let mut reasoning_chunks: u32 = 0;
     let mut output_chunks: u32 = 0;
 
-    let mut prompt_tokens: u32 = 0;
-    let mut predicted_tokens: u32 = 0;
-    let mut prompt_per_second: Option<f64> = None;
-    let mut predicted_per_second: Option<f64> = None;
-    let mut prompt_ms: Option<f64> = None;
-    let mut predicted_ms: Option<f64> = None;
+    let mut usage = StreamUsage::default();
 
     while let Some(chunk) = stream.next().await {
         let bytes = chunk?;
         byte_buf.extend_from_slice(&bytes);
 
-        while let Some(nl_pos) = byte_buf.iter().position(|&b| b == b'\n') {
-            let line_bytes: Vec<u8> = byte_buf.drain(..=nl_pos).collect();
-            let line = String::from_utf8_lossy(&line_bytes).trim().to_string();
-
-            let Some(data) = line.strip_prefix("data:") else {
-                continue;
-            };
-            let data = data.trim();
-            if data.is_empty() || data == "[DONE]" {
-                continue;
-            }
-            let Ok(v) = serde_json::from_str::<Value>(data) else {
+        for line in drain_complete_sse_lines(&mut byte_buf) {
+            let Some(v) = sse_data_json(&line) else {
                 continue;
             };
 
@@ -263,45 +236,16 @@ where
                 });
             }
 
-            // Capture OpenAI `usage`
-            if let Some(usage) = v.get("usage") {
-                if let Some(pt) = usage.get("prompt_tokens").and_then(Value::as_u64) {
-                    prompt_tokens = pt as u32;
-                }
-                if let Some(ct) = usage.get("completion_tokens").and_then(Value::as_u64) {
-                    predicted_tokens = ct as u32;
-                }
-            }
-
-            // Capture exact `llama-server` timings block
-            if let Some(timings) = v.get("timings") {
-                if let Some(pn) = timings.get("prompt_n").and_then(Value::as_u64) {
-                    prompt_tokens = pn as u32;
-                }
-                if let Some(gn) = timings.get("predicted_n").and_then(Value::as_u64) {
-                    predicted_tokens = gn as u32;
-                }
-                if let Some(ps) = timings.get("prompt_per_second").and_then(Value::as_f64) {
-                    prompt_per_second = Some(ps);
-                }
-                if let Some(gs) = timings.get("predicted_per_second").and_then(Value::as_f64) {
-                    predicted_per_second = Some(gs);
-                }
-                if let Some(pm) = timings.get("prompt_ms").and_then(Value::as_f64) {
-                    prompt_ms = Some(pm);
-                }
-                if let Some(gm) = timings.get("predicted_ms").and_then(Value::as_f64) {
-                    predicted_ms = Some(gm);
-                }
-            }
+            usage.absorb(&v);
         }
     }
 
     let total_duration_ms = started.elapsed().as_secs_f64() * 1000.0;
     let ttft_final = ttft_ms.unwrap_or(total_duration_ms);
     let total_chunks = (reasoning_chunks + output_chunks).max(1);
-    let total_gen_tokens = if predicted_tokens > 0 {
-        predicted_tokens
+    let prompt_tokens = usage.prompt_tokens;
+    let total_gen_tokens = if usage.completion_tokens > 0 {
+        usage.completion_tokens
     } else {
         reasoning_chunks + output_chunks
     };
@@ -317,13 +261,8 @@ where
         (r.min(total_gen_tokens), total_gen_tokens.saturating_sub(r))
     };
 
-    let gen_ms = predicted_ms.unwrap_or_else(|| (total_duration_ms - ttft_final).max(1.0));
-    let pp_ms = prompt_ms.unwrap_or(ttft_final.max(1.0));
-
-    let generation_tok_s = predicted_per_second
-        .unwrap_or_else(|| (total_gen_tokens as f64) / (gen_ms / 1000.0).max(0.001));
-    let prompt_eval_tok_s = prompt_per_second
-        .unwrap_or_else(|| (prompt_tokens as f64) / (pp_ms / 1000.0).max(0.001));
+    let (pp_ms, gen_ms, prompt_eval_tok_s, generation_tok_s) =
+        usage.rates(ttft_final, total_duration_ms, total_gen_tokens);
 
     let record = BenchmarkRunRecord {
         id: run_id,
@@ -355,6 +294,95 @@ where
     })
 }
 
+/// POSTs a streaming chat completion; non-2xx replies become `UpstreamStatus` errors.
+pub(crate) async fn post_chat_stream(
+    endpoint_url: &str,
+    body: &Value,
+    extra_headers: &[(&str, &str)],
+) -> Result<reqwest::Response, BenchError> {
+    let mut req_builder = reqwest::Client::new().post(endpoint_url).json(body);
+    for (k, v) in extra_headers {
+        req_builder = req_builder.header(*k, *v);
+    }
+    let resp = req_builder.send().await?;
+    if !resp.status().is_success() {
+        return Err(BenchError::UpstreamStatus {
+            status: resp.status().as_u16(),
+            body: resp.text().await.unwrap_or_default(),
+        });
+    }
+    Ok(resp)
+}
+
+/// JSON payload of one SSE `data:` line; `None` for other lines, blanks and `[DONE]`.
+pub(crate) fn sse_data_json(line: &str) -> Option<Value> {
+    let data = line.strip_prefix("data:")?.trim();
+    if data.is_empty() || data == "[DONE]" {
+        return None;
+    }
+    serde_json::from_str(data).ok()
+}
+
+/// Token counts and timings from a streamed completion: OpenAI `usage`, then llama-server's
+/// more exact `timings` block, which wins when both are present.
+#[derive(Default)]
+pub(crate) struct StreamUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub cached_tokens: u32,
+    prompt_per_second: Option<f64>,
+    predicted_per_second: Option<f64>,
+    prompt_ms: Option<f64>,
+    predicted_ms: Option<f64>,
+}
+
+impl StreamUsage {
+    pub(crate) fn absorb(&mut self, v: &Value) {
+        let n = |obj: &Value, key: &str| obj.get(key).and_then(Value::as_u64).map(|x| x as u32);
+        let f = |obj: &Value, key: &str| obj.get(key).and_then(Value::as_f64);
+        if let Some(usage) = v.get("usage") {
+            if let Some(x) = n(usage, "prompt_tokens") {
+                self.prompt_tokens = x;
+            }
+            if let Some(x) = n(usage, "completion_tokens") {
+                self.completion_tokens = x;
+            }
+            if let Some(x) = usage.get("prompt_tokens_details").and_then(|d| n(d, "cached_tokens")) {
+                self.cached_tokens = x;
+            }
+        }
+        if let Some(t) = v.get("timings") {
+            if let Some(x) = n(t, "cache_n") {
+                self.cached_tokens = x;
+            }
+            if let Some(x) = n(t, "prompt_n") {
+                self.prompt_tokens = x;
+            }
+            if let Some(x) = n(t, "predicted_n") {
+                self.completion_tokens = x;
+            }
+            self.prompt_per_second = f(t, "prompt_per_second").or(self.prompt_per_second);
+            self.predicted_per_second = f(t, "predicted_per_second").or(self.predicted_per_second);
+            self.prompt_ms = f(t, "prompt_ms").or(self.prompt_ms);
+            self.predicted_ms = f(t, "predicted_ms").or(self.predicted_ms);
+        }
+    }
+
+    /// `(prompt_ms, generation_ms, prompt_tok_s, generation_tok_s)`, estimated from wall-clock
+    /// time when the server sent no timings.
+    pub(crate) fn rates(&self, ttft_ms: f64, total_ms: f64, gen_tokens: u32) -> (f64, f64, f64, f64) {
+        let gen_ms = self.predicted_ms.unwrap_or_else(|| (total_ms - ttft_ms).max(1.0));
+        let pp_ms = self.prompt_ms.unwrap_or(ttft_ms.max(1.0));
+        let pp_tok_s = self
+            .prompt_per_second
+            .unwrap_or_else(|| (self.prompt_tokens as f64) / (pp_ms / 1000.0).max(0.001));
+        let gen_tok_s = self
+            .predicted_per_second
+            .unwrap_or_else(|| (gen_tokens as f64) / (gen_ms / 1000.0).max(0.001));
+        (pp_ms, gen_ms, pp_tok_s, gen_tok_s)
+    }
+}
+
 /// Decodes complete `\n`-delimited lines from a raw byte buffer without splitting multi-byte UTF-8 sequences.
 pub fn drain_complete_sse_lines(byte_buf: &mut Vec<u8>) -> Vec<String> {
     let mut lines = Vec::new();
@@ -368,6 +396,19 @@ pub fn drain_complete_sse_lines(byte_buf: &mut Vec<u8>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sse_usage_prefers_server_timings_over_openai_usage() {
+        assert!(sse_data_json("data: [DONE]").is_none());
+        assert!(sse_data_json(": keep-alive").is_none());
+        let mut u = StreamUsage::default();
+        u.absorb(&sse_data_json(r#"data: {"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":2}}}"#).unwrap());
+        assert_eq!((u.prompt_tokens, u.completion_tokens, u.cached_tokens), (10, 5, 2));
+        u.absorb(&sse_data_json(r#"data: {"timings":{"prompt_n":12,"predicted_n":6,"cache_n":4,"predicted_per_second":30.0}}"#).unwrap());
+        assert_eq!((u.prompt_tokens, u.completion_tokens, u.cached_tokens), (12, 6, 4));
+        let (_, _, _, gen_tok_s) = u.rates(100.0, 1100.0, 6);
+        assert_eq!(gen_tok_s, 30.0);
+    }
 
     #[test]
     fn raw_byte_sse_drain_preserves_split_multibyte_utf8() {

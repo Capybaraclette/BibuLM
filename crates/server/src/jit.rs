@@ -1,5 +1,6 @@
 use axum::http::StatusCode;
-use bibulm_core::{AppSettings, Database, LiveMemoryContext, LoadConfig};
+use bibulm_core::{AppSettings, Database, LiveMemoryContext, LoadConfig, canonical_file_within};
+use bibulm_hardware::{HardwareMonitor, LiveMemoryBudget, TelemetrySnapshot};
 use bibulm_link::{LinkManager, RemotePeer};
 use bibulm_models::{LocalModelEntry, scan_local_models_with_external};
 use bibulm_runtime::{LoadedModelInfo, ModelSupervisor};
@@ -34,6 +35,41 @@ pub struct LinkHardwareSnapshot {
 }
 
 impl LinkHardwareSnapshot {
+    /// Static hardware capabilities plus the current memory sample.
+    pub fn from_monitor(hw: &mut HardwareMonitor, disabled_gpu_ids: &[u32]) -> Self {
+        let prof = hw.profile();
+        let nv = prof.gpus.iter().find(|g| g.vendor == "NVIDIA");
+        let mut snap = Self {
+            gpu_summary: prof.format_summary(),
+            cpu_logical_cores: prof.cpu.logical_cores as u32,
+            has_nvidia: nv.is_some(),
+            nvidia_cuda_major: nv.and_then(|g| g.cuda_version_major),
+            nvidia_cuda_minor: nv.and_then(|g| g.cuda_version_minor),
+            has_amd_gpu: prof.gpus.iter().any(|g| g.vendor == "AMD"),
+            has_intel_gpu: prof.gpus.iter().any(|g| g.vendor == "Intel"),
+            has_any_gpu: !prof.gpus.is_empty(),
+            has_avx512: prof.cpu.has_avx512,
+            has_avx2: prof.cpu.has_avx2,
+            ..Default::default()
+        };
+        let sample = hw.sample(disabled_gpu_ids);
+        let budget = hw.memory_budget(disabled_gpu_ids);
+        snap.apply_sample(&sample, &budget);
+        snap
+    }
+
+    /// Refreshes the live memory fields from a telemetry sample.
+    pub fn apply_sample(&mut self, s: &TelemetrySnapshot, budget: &LiveMemoryBudget) {
+        const MIB: f64 = 1024.0 * 1024.0;
+        self.vram_used_mib = s.vram_used_bytes as f64 / MIB;
+        self.vram_used_avg_mib = budget.vram_used_avg_mib;
+        self.vram_total_mib = s.vram_total_bytes as f64 / MIB;
+        self.ram_used_mib = s.ram_used_bytes as f64 / MIB;
+        self.ram_used_avg_mib = budget.ram_used_avg_mib;
+        self.ram_total_mib = s.ram_total_bytes as f64 / MIB;
+        self.vram_sample_count = budget.sample_count;
+    }
+
     /// Hardware capabilities used to pick compatible `llama.cpp` runtime builds.
     pub fn to_runtime_match_context(&self) -> bibulm_runtime::HardwareMatchContext {
         bibulm_runtime::HardwareMatchContext {
@@ -178,7 +214,17 @@ impl GatewayContext {
             return Some(found);
         }
 
-        // Cache miss: force a fresh scan once in case a model was just added on disk.
+        // Cache miss: rescan in case a model was just added on disk, but at most every few
+        // seconds — unknown names (peer models, generic ids) would otherwise rescan per request.
+        let recently_scanned = self
+            .models_cache
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|(ts, ..)| ts.elapsed() < Duration::from_secs(5));
+        if recently_scanned {
+            return None;
+        }
         self.invalidate_models_cache().await;
         let fresh = self.cached_local_models().await;
         match_fn(&fresh)
@@ -520,18 +566,8 @@ impl GatewayContext {
             let is_known_mmproj = all_locals
                 .iter()
                 .any(|m| m.mmproj_path.as_ref().is_some_and(|p| p == mm));
-            let in_allowed_root = std::fs::canonicalize(mm).is_ok_and(|canon| {
-                canon.is_file()
-                    && canon
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
-                    && cfg_snap.models_dirs.iter().any(|root| {
-                        std::fs::canonicalize(root)
-                            .map(|r| canon.starts_with(r))
-                            .unwrap_or(false)
-                    })
-            });
+            let in_allowed_root =
+                canonical_file_within(mm, &cfg_snap.models_dirs, &["gguf"]).is_some();
             if !is_paired && !is_known_mmproj && !in_allowed_root {
                 load_cfg.mmproj_path = local.mmproj_path.clone();
             }
@@ -694,28 +730,9 @@ impl GatewayContext {
 }
 
 fn is_allowed_template_file(path: &PathBuf, models_dirs: &[PathBuf]) -> bool {
-    let Ok(canon) = std::fs::canonicalize(path) else {
-        return false;
-    };
-    if !canon.is_file() {
-        return false;
-    }
-    let ext_ok = canon
-        .extension()
-        .and_then(|s| s.to_str())
-        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "jinja" | "j2" | "txt" | "tmpl"));
-    if !ext_ok {
-        return false;
-    }
     let templates_dir = bibulm_core::default_data_dir().join("templates");
-    models_dirs
-        .iter()
-        .chain(std::iter::once(&templates_dir))
-        .any(|root| {
-            std::fs::canonicalize(root)
-                .map(|r| canon.starts_with(r))
-                .unwrap_or(false)
-        })
+    let roots = models_dirs.iter().chain(std::iter::once(&templates_dir));
+    canonical_file_within(path, roots, &["jinja", "j2", "txt", "tmpl"]).is_some()
 }
 
 fn is_safe_remote_cli_flag(flag: &str) -> bool {

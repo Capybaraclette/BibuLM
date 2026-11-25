@@ -295,16 +295,7 @@ pub fn run() {
                             .supervisor
                             .sync_live_telemetry(s.wddm_spillover_warning, shared_mib, &pid_mem)
                             .await;
-                        {
-                            let mut lhw = state.link_hw_snapshot.write().await;
-                            lhw.vram_used_mib = s.vram_used_bytes as f64 / (1024.0 * 1024.0);
-                            lhw.vram_used_avg_mib = budget.vram_used_avg_mib;
-                            lhw.vram_total_mib = s.vram_total_bytes as f64 / (1024.0 * 1024.0);
-                            lhw.ram_used_mib = s.ram_used_bytes as f64 / (1024.0 * 1024.0);
-                            lhw.ram_used_avg_mib = budget.ram_used_avg_mib;
-                            lhw.ram_total_mib = s.ram_total_bytes as f64 / (1024.0 * 1024.0);
-                            lhw.vram_sample_count = budget.sample_count;
-                        }
+                        state.link_hw_snapshot.write().await.apply_sample(&s, &budget);
                         if tel_handle.get_webview_window("main").is_some() {
                             let _ = tel_handle.emit("telemetry-update", &s);
                             if changed || epoch_changed {
@@ -363,7 +354,8 @@ pub fn run() {
                 let state = dl_handle.state::<AppState>();
                 let mut rx = state.downloads.subscribe();
                 while let Ok(job) = rx.recv().await {
-                    if job.status == "completed" && job.kind == "model" {
+                    if job.status == bibulm_models::JobStatus::Completed
+                        && job.kind == bibulm_models::JobKind::Model {
                         state.gateway.invalidate_models_cache().await;
                         state.link.notify_peers_state_changed();
                     }
@@ -466,14 +458,11 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::get_model_preset,
-            commands::save_model_preset,
-            commands::delete_model_preset,
             commands::list_named_presets,
             commands::save_named_preset,
             commands::delete_named_preset,
             commands::scan_local_library,
             commands::list_discovered_model_sources,
-            commands::inspect_gguf_file,
             commands::check_draft_model_compatibility,
             commands::estimate_model_memory,
             commands::estimate_model_memory_with_context,
@@ -501,7 +490,6 @@ pub fn run() {
             commands::load_model_cmd,
             commands::read_text_file_preview,
             commands::unload_model_cmd,
-            commands::unload_all_models,
             commands::list_loaded_models,
             commands::get_server_logs,
             commands::clear_server_logs,

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 bibulm-core = { path = "../core" }
+bibulm-hardware = { path = "../hardware" }
 bibulm-runtime = { path = "../runtime" }
 bibulm-models = { path = "../models" }
 bibulm-link = { path = "../link" }

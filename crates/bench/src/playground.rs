@@ -1,4 +1,6 @@
-use crate::quick_test::{BenchError, drain_complete_sse_lines};
+use crate::quick_test::{
+    BenchError, StreamUsage, drain_complete_sse_lines, post_chat_stream, sse_data_json,
+};
 use futures_util::StreamExt;
 use bibulm_core::{SamplingParams, apply_sampling_to_openai_body};
 use serde::{Deserialize, Serialize};
@@ -127,19 +129,8 @@ where
         }
     }
 
-    let client = reqwest::Client::new();
     let started = Instant::now();
-    let mut req_builder = client.post(endpoint_url).json(&body);
-    for (k, v) in extra_headers {
-        req_builder = req_builder.header(*k, *v);
-    }
-    let resp = req_builder.send().await?;
-    if !resp.status().is_success() {
-        return Err(BenchError::UpstreamStatus {
-            status: resp.status().as_u16(),
-            body: resp.text().await.unwrap_or_default(),
-        });
-    }
+    let resp = post_chat_stream(endpoint_url, &body, extra_headers).await?;
 
     let mut stream = resp.bytes_stream();
     let mut byte_buf: Vec<u8> = Vec::new();
@@ -150,27 +141,14 @@ where
     let mut tool_acc: BTreeMap<usize, PartialToolCall> = BTreeMap::new();
     let mut approx_tokens: u32 = 0;
 
-    let mut prompt_tokens: u32 = 0;
-    let mut cached_tokens: u32 = 0;
-    let mut completion_tokens: u32 = 0;
-    let mut prompt_per_second: Option<f64> = None;
-    let mut predicted_per_second: Option<f64> = None;
-    let mut prompt_ms: Option<f64> = None;
-    let mut predicted_ms: Option<f64> = None;
+    let mut usage = StreamUsage::default();
 
     while let Some(chunk) = stream.next().await {
         let bytes = chunk?;
         byte_buf.extend_from_slice(&bytes);
 
         for line in drain_complete_sse_lines(&mut byte_buf) {
-            let Some(data) = line.strip_prefix("data:") else {
-                continue;
-            };
-            let data = data.trim();
-            if data.is_empty() || data == "[DONE]" {
-                continue;
-            }
-            let Ok(v) = serde_json::from_str::<Value>(data) else {
+            let Some(v) = sse_data_json(&line) else {
                 continue;
             };
 
@@ -243,57 +221,19 @@ where
                 }
             }
 
-            if let Some(usage) = v.get("usage") {
-                if let Some(pt) = usage.get("prompt_tokens").and_then(Value::as_u64) {
-                    prompt_tokens = pt as u32;
-                }
-                if let Some(ct) = usage.get("completion_tokens").and_then(Value::as_u64) {
-                    completion_tokens = ct as u32;
-                }
-                if let Some(cached) = usage
-                    .get("prompt_tokens_details")
-                    .and_then(|d| d.get("cached_tokens"))
-                    .and_then(Value::as_u64)
-                {
-                    cached_tokens = cached as u32;
-                }
-            }
-
-            if let Some(timings) = v.get("timings") {
-                if let Some(cn) = timings.get("cache_n").and_then(Value::as_u64) {
-                    cached_tokens = cn as u32;
-                }
-                if let Some(pn) = timings.get("prompt_n").and_then(Value::as_u64) {
-                    prompt_tokens = pn as u32;
-                }
-                if let Some(gn) = timings.get("predicted_n").and_then(Value::as_u64) {
-                    completion_tokens = gn as u32;
-                }
-                if let Some(ps) = timings.get("prompt_per_second").and_then(Value::as_f64) {
-                    prompt_per_second = Some(ps);
-                }
-                if let Some(gs) = timings.get("predicted_per_second").and_then(Value::as_f64) {
-                    predicted_per_second = Some(gs);
-                }
-                if let Some(pm) = timings.get("prompt_ms").and_then(Value::as_f64) {
-                    prompt_ms = Some(pm);
-                }
-                if let Some(gm) = timings.get("predicted_ms").and_then(Value::as_f64) {
-                    predicted_ms = Some(gm);
-                }
-            }
+            usage.absorb(&v);
         }
     }
 
     let total_duration_ms = started.elapsed().as_secs_f64() * 1000.0;
     let ttft_final = ttft_ms.unwrap_or(total_duration_ms);
-    let total_gen = if completion_tokens > 0 {
-        completion_tokens
+    let total_gen = if usage.completion_tokens > 0 {
+        usage.completion_tokens
     } else {
         approx_tokens
     };
-    let gen_ms = predicted_ms.unwrap_or_else(|| (total_duration_ms - ttft_final).max(1.0));
-    let pp_ms = prompt_ms.unwrap_or(ttft_final.max(1.0));
+    let (_, _, prompt_eval_tok_s, generation_tok_s) =
+        usage.rates(ttft_final, total_duration_ms, total_gen);
 
     let tool_calls: Vec<Value> = tool_acc
         .into_iter()
@@ -315,14 +255,12 @@ where
         output_text,
         tool_calls,
         finish_reason,
-        prompt_tokens,
-        cached_tokens,
+        prompt_tokens: usage.prompt_tokens,
+        cached_tokens: usage.cached_tokens,
         completion_tokens: total_gen,
         ttft_ms: ttft_final,
-        prompt_eval_tok_s: prompt_per_second
-            .unwrap_or_else(|| (prompt_tokens as f64) / (pp_ms / 1000.0).max(0.001)),
-        generation_tok_s: predicted_per_second
-            .unwrap_or_else(|| (total_gen as f64) / (gen_ms / 1000.0).max(0.001)),
+        prompt_eval_tok_s,
+        generation_tok_s,
         total_duration_ms,
     })
 }
