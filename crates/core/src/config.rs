@@ -211,23 +211,6 @@ pub fn default_data_dir() -> PathBuf {
     PathBuf::from("./data")
 }
 
-/// Resolves the pre-rebrand persistent data directory, if present, for one-time DB migration.
-pub fn legacy_data_dir() -> Option<PathBuf> {
-    if let Some(proj) = ProjectDirs::from("com", "ruststudio", "rustStudio") {
-        let dir = proj.data_local_dir().to_path_buf();
-        if dir.is_dir() {
-            return Some(dir);
-        }
-    }
-    if let Some(user) = UserDirs::new() {
-        let dir = user.home_dir().join(".ruststudio");
-        if dir.is_dir() {
-            return Some(dir);
-        }
-    }
-    None
-}
-
 /// Discovers model directories managed by other local AI applications (Ollama, LM Studio,
 /// Jan, GPT4All, llama.cpp cache, HuggingFace Hub cache, AnythingLLM, Msty, Backyard AI, etc.).
 pub fn discover_external_model_sources() -> Vec<ExternalModelSource> {
@@ -238,11 +221,6 @@ pub fn discover_external_model_sources() -> Vec<ExternalModelSource> {
         .as_ref()
         .map(|u| u.home_dir().to_path_buf())
         .or_else(|| base_dirs.as_ref().map(|b| b.home_dir().to_path_buf()));
-
-    // Legacy rustStudio data/models
-    if let Some(old_dir) = legacy_data_dir() {
-        candidates.push(("rustStudio", old_dir.join("models"), ExternalSourceKind::GgufDir));
-    }
 
     // LM Studio (custom downloadsFolder in ~/.lmstudio/settings.json + default locations)
     if let Some(h) = &home {

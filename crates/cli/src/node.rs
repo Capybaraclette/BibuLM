@@ -1,6 +1,6 @@
 //! Headless node composition: database, hardware monitor, supervisor, downloads, Link and gateway.
 
-use bibulm_core::{AppSettings, Database, default_data_dir, legacy_data_dir};
+use bibulm_core::{AppSettings, Database, default_data_dir};
 use bibulm_hardware::HardwareMonitor;
 use bibulm_link::LinkManager;
 use bibulm_models::{DownloadManager, JobKind, JobStatus};
@@ -29,15 +29,6 @@ impl HeadlessNode {
         let data_dir = default_data_dir();
         std::fs::create_dir_all(&data_dir)?;
         let db_path = data_dir.join("bibulm.db");
-
-        if !db_path.exists()
-            && let Some(old_dir) = legacy_data_dir()
-        {
-            let old_db = old_dir.join("ruststudio.db");
-            if old_db.is_file() {
-                let _ = std::fs::copy(&old_db, &db_path);
-            }
-        }
 
         let db = Database::open(&db_path)?;
         let settings_val = db.load_settings().unwrap_or_default();

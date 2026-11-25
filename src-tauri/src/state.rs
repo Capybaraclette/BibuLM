@@ -1,4 +1,4 @@
-use bibulm_core::{AppSettings, Database, default_data_dir, legacy_data_dir};
+use bibulm_core::{AppSettings, Database, default_data_dir};
 use bibulm_hardware::HardwareMonitor;
 use bibulm_link::LinkManager;
 use bibulm_models::DownloadManager;
@@ -25,20 +25,6 @@ impl AppState {
         let data_dir = default_data_dir();
         std::fs::create_dir_all(&data_dir)?;
         let db_path = data_dir.join("bibulm.db");
-
-        // One-time non-destructive migration from pre-rebrand local database if present
-        if !db_path.exists()
-            && let Some(old_dir) = legacy_data_dir()
-        {
-            let old_db = old_dir.join("ruststudio.db");
-            if old_db.is_file() {
-                if let Err(e) = std::fs::copy(&old_db, &db_path) {
-                    tracing::warn!("Could not copy legacy database: {e}");
-                } else {
-                    tracing::info!("Migrated legacy database into {}", db_path.display());
-                }
-            }
-        }
 
         let db = Database::open(&db_path)?;
 
