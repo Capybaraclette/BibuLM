@@ -24,9 +24,9 @@ fn build_custom_args(raw: &str, endpoint: Option<(&str, u16)>) -> Vec<String> {
     // If the user pasted a full command preview starting with `llama-server(.exe)`, drop the exe token.
     if let Some(first) = iter.peek()
         && !first.starts_with('-')
-        && Path::new(first)
-            .file_name()
-            .and_then(|n| n.to_str())
+        && first
+            .rsplit(['/', '\\'])
+            .next()
             .is_some_and(|n| {
                 n.eq_ignore_ascii_case("llama-server") || n.eq_ignore_ascii_case("llama-server.exe")
             })
@@ -651,6 +651,12 @@ mod tests {
                 "--port",
                 "51005",
             ]
+        );
+
+        cfg.custom_cli_args = Some("/usr/local/bin/llama-server -m /models/m.gguf -c 2048".into());
+        assert_eq!(
+            build_llama_server_args(&cfg, "127.0.0.1", 51006),
+            vec!["-m", "/models/m.gguf", "-c", "2048", "--host", "127.0.0.1", "--port", "51006"]
         );
     }
 }
