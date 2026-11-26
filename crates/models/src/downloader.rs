@@ -35,10 +35,83 @@ pub enum DownloadError {
     Cancelled,
 }
 
+/// Serialized in lowercase, the same strings the UI and the SQLite history use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JobStatus {
+    Queued,
+    Downloading,
+    Verifying,
+    Paused,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl JobStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Downloading => "downloading",
+            Self::Verifying => "verifying",
+            Self::Paused => "paused",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// Unknown strings from an older history row are treated as failed.
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "queued" => Self::Queued,
+            "downloading" => Self::Downloading,
+            "verifying" => Self::Verifying,
+            "paused" => Self::Paused,
+            "completed" => Self::Completed,
+            "cancelled" => Self::Cancelled,
+            _ => Self::Failed,
+        }
+    }
+
+    /// Still running or waiting to run.
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Queued | Self::Downloading | Self::Verifying)
+    }
+
+    pub fn is_finished(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JobKind {
+    Model,
+    Runtime,
+}
+
+impl JobKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Model => "model",
+            Self::Runtime => "runtime",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        if s == "runtime" {
+            Self::Runtime
+        } else {
+            Self::Model
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadJobState {
     pub id: String,
-    pub kind: String,
+    pub kind: JobKind,
     pub title: String,
     pub repo_id: Option<String>,
     pub dest_dir: String,
@@ -48,11 +121,61 @@ pub struct DownloadJobState {
     pub downloaded_bytes: u64,
     pub speed_bytes_per_sec: f64,
     pub eta_seconds: Option<u64>,
-    /// `"queued"`, `"downloading"`, `"verifying"`, `"paused"`, `"completed"`, `"failed"`, `"cancelled"`
-    pub status: String,
+    pub status: JobStatus,
     pub error: Option<String>,
     pub created_at: String,
     pub completed_at: Option<String>,
+}
+
+impl DownloadJobState {
+    /// A llama.cpp runtime install shown in the downloads list; the installer reports progress.
+    pub fn runtime_install(title: String, dest_dir: String, total_bytes: u64) -> Self {
+        Self {
+            id: format!("rt-{}", Uuid::new_v4()),
+            kind: JobKind::Runtime,
+            title,
+            repo_id: Some("ggml-org/llama.cpp".to_string()),
+            dest_dir,
+            files: Vec::new(),
+            current_file: Some("Starting...".to_string()),
+            total_bytes,
+            downloaded_bytes: 0,
+            speed_bytes_per_sec: 0.0,
+            eta_seconds: None,
+            status: JobStatus::Downloading,
+            error: None,
+            created_at: Utc::now().to_rfc3339(),
+            completed_at: None,
+        }
+    }
+
+    /// Progress snapshot with the installer's current stage and byte counts.
+    pub fn with_progress(&self, stage: String, downloaded_bytes: u64, total_bytes: u64) -> Self {
+        Self {
+            current_file: Some(stage),
+            downloaded_bytes,
+            total_bytes,
+            ..self.clone()
+        }
+    }
+
+    /// Final state: completed into the install directory, or failed with the error.
+    pub fn finished(&self, outcome: Result<String, String>) -> Self {
+        let mut job = Self { current_file: None, ..self.clone() };
+        match outcome {
+            Ok(install_dir) => {
+                job.dest_dir = install_dir;
+                job.downloaded_bytes = job.total_bytes;
+                job.status = JobStatus::Completed;
+                job.completed_at = Some(Utc::now().to_rfc3339());
+            }
+            Err(e) => {
+                job.status = JobStatus::Failed;
+                job.error = Some(e);
+            }
+        }
+        job
+    }
 }
 
 struct ActiveControl {
@@ -78,10 +201,9 @@ impl DownloadManager {
         if let Ok(records) = db.list_downloads() {
             for r in records {
                 // Any interrupted in-progress download from a prior run starts as paused/failed safely.
-                let status = if r.status == "downloading" || r.status == "queued" {
-                    "paused".to_string()
-                } else {
-                    r.status
+                let status = match JobStatus::parse(&r.status) {
+                    s if s.is_active() => JobStatus::Paused,
+                    s => s,
                 };
                 let files: Vec<HfDownloadFile> = r
                     .files_json
@@ -92,7 +214,7 @@ impl DownloadManager {
                     r.id.clone(),
                     DownloadJobState {
                         id: r.id,
-                        kind: r.kind,
+                        kind: JobKind::parse(&r.kind),
                         title: r.title,
                         repo_id: r.repo_id,
                         dest_dir: r.dest_dir,
@@ -142,7 +264,7 @@ impl DownloadManager {
         let total_bytes: u64 = files.iter().map(|f| f.size_bytes).sum();
         let job = DownloadJobState {
             id: id.clone(),
-            kind: "model".to_string(),
+            kind: JobKind::Model,
             title,
             repo_id: Some(repo_id),
             dest_dir: dest_dir.to_string_lossy().into_owned(),
@@ -152,7 +274,7 @@ impl DownloadManager {
             downloaded_bytes: 0,
             speed_bytes_per_sec: 0.0,
             eta_seconds: None,
-            status: "queued".to_string(),
+            status: JobStatus::Queued,
             error: None,
             created_at: Utc::now().to_rfc3339(),
             completed_at: None,
@@ -190,7 +312,7 @@ impl DownloadManager {
         }
         let mut jobs = self.jobs.lock().await;
         if let Some(job) = jobs.get_mut(id) {
-            job.status = "cancelled".to_string();
+            job.status = JobStatus::Cancelled;
             job.speed_bytes_per_sec = 0.0;
             job.eta_seconds = None;
             let snap = job.clone();
@@ -217,7 +339,7 @@ impl DownloadManager {
                 if job.files.is_empty() {
                     false
                 } else {
-                    job.status = "queued".to_string();
+                    job.status = JobStatus::Queued;
                     job.error = None;
                     let snap = job.clone();
                     drop(jobs);
@@ -237,12 +359,7 @@ impl DownloadManager {
     pub async fn clear_completed(&self) {
         let _ = self.db.clear_completed_downloads();
         let mut jobs = self.jobs.lock().await;
-        jobs.retain(|_, j| {
-            !matches!(
-                j.status.as_str(),
-                "completed" | "failed" | "cancelled"
-            )
-        });
+        jobs.retain(|_, j| !j.status.is_finished());
     }
 
     async fn spawn_worker(&self, id: String, hf_token: Option<String>) {
@@ -273,7 +390,7 @@ impl DownloadManager {
                 let Some(job) = map.get_mut(&id) else {
                     return;
                 };
-                job.status = "downloading".to_string();
+                job.status = JobStatus::Downloading;
                 let snap = job.clone();
                 let _ = db.upsert_download(&to_record(&snap));
                 let _ = tx.send(snap);
@@ -301,19 +418,19 @@ impl DownloadManager {
                 job.eta_seconds = None;
                 match result {
                     Ok(()) => {
-                        job.status = "completed".to_string();
+                        job.status = JobStatus::Completed;
                         job.downloaded_bytes = job.total_bytes;
                         job.completed_at = Some(Utc::now().to_rfc3339());
                         job.error = None;
                     }
                     Err(DownloadError::Paused) => {
-                        job.status = "paused".to_string();
+                        job.status = JobStatus::Paused;
                     }
                     Err(DownloadError::Cancelled) => {
-                        job.status = "cancelled".to_string();
+                        job.status = JobStatus::Cancelled;
                     }
                     Err(e) => {
-                        job.status = "failed".to_string();
+                        job.status = JobStatus::Failed;
                         job.error = Some(e.to_string());
                     }
                 }
@@ -398,7 +515,7 @@ async fn run_resumable_job(
 
         let resp = req.send().await?;
         let status = resp.status();
-        let mut out_file = if status == reqwest::StatusCode::PARTIAL_CONTENT && existing_part > 0 {
+        let file = if status == reqwest::StatusCode::PARTIAL_CONTENT && existing_part > 0 {
             let mut file = OpenOptions::new().write(true).open(&part_path)?;
             file.seek(SeekFrom::End(0))?;
             file
@@ -411,6 +528,8 @@ async fn run_resumable_job(
                 url: f.url.clone(),
             });
         };
+        // Network chunks are small; batch them into fewer blocking writes on the async worker.
+        let mut out_file = std::io::BufWriter::with_capacity(1 << 20, file);
 
         let mut file_downloaded = existing_part;
         let mut last_emit = Instant::now();
@@ -466,7 +585,7 @@ async fn run_resumable_job(
             {
                 let mut map = jobs.lock().await;
                 if let Some(job) = map.get_mut(id) {
-                    job.status = "verifying".to_string();
+                    job.status = JobStatus::Verifying;
                     job.current_file = Some(format!("Verifying SHA-256: {}", f.file_name));
                     let _ = tx.send(job.clone());
                 }
@@ -506,12 +625,7 @@ fn compute_sha256(path: &Path) -> std::io::Result<String> {
         }
         hasher.update(&buf[..n]);
     }
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(64);
-    for b in digest {
-        hex.push_str(&format!("{b:02x}"));
-    }
-    Ok(hex)
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn to_record(j: &DownloadJobState) -> DownloadRecord {
@@ -522,13 +636,13 @@ fn to_record(j: &DownloadJobState) -> DownloadRecord {
     };
     DownloadRecord {
         id: j.id.clone(),
-        kind: j.kind.clone(),
+        kind: j.kind.as_str().to_string(),
         title: j.title.clone(),
         repo_id: j.repo_id.clone(),
         dest_dir: j.dest_dir.clone(),
         total_bytes: j.total_bytes,
         downloaded_bytes: j.downloaded_bytes,
-        status: j.status.clone(),
+        status: j.status.as_str().to_string(),
         error: j.error.clone(),
         files_json,
         created_at: j.created_at.clone(),
@@ -553,7 +667,7 @@ mod tests {
         }];
         let job = DownloadJobState {
             id: job_id.clone(),
-            kind: "model".into(),
+            kind: JobKind::Model,
             title: "Test Model".into(),
             repo_id: Some("org/repo".into()),
             dest_dir: std::env::temp_dir().to_string_lossy().into_owned(),
@@ -563,7 +677,7 @@ mod tests {
             downloaded_bytes: 250_000,
             speed_bytes_per_sec: 0.0,
             eta_seconds: None,
-            status: "downloading".into(),
+            status: JobStatus::Downloading,
             error: None,
             created_at: Utc::now().to_rfc3339(),
             completed_at: None,
@@ -573,7 +687,7 @@ mod tests {
         let mgr = DownloadManager::new(db, 2);
         let jobs = mgr.list_jobs().await;
         assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].status, "paused");
+        assert_eq!(jobs[0].status, JobStatus::Paused);
         assert_eq!(jobs[0].files.len(), 1);
         assert_eq!(jobs[0].files[0].file_name, "model-q4_k_m.gguf");
     }

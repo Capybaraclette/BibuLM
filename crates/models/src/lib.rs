@@ -5,7 +5,7 @@ pub mod downloader;
 pub mod hf_client;
 pub mod library;
 
-pub use downloader::{DownloadError, DownloadJobState, DownloadManager};
+pub use downloader::{DownloadError, DownloadJobState, DownloadManager, JobKind, JobStatus};
 pub use hf_client::{
     HfDownloadFile, HfError, HfModelDetail, HfModelSummary, HfQuantOption, HfSortOrder,
     ModelCapabilities, get_hf_model_detail, search_hf_gguf_models,

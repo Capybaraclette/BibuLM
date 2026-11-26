@@ -1,3 +1,4 @@
+#[cfg(target_os = "windows")]
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use sha2::{Digest, Sha256};
 
@@ -5,12 +6,7 @@ const DPAPI_PREFIX: &str = "dpapi:v1:";
 
 /// Computes lowercase hex SHA-256 digest of a UTF-8 string.
 pub fn sha256_hex(input: &str) -> String {
-    let digest = Sha256::digest(input.as_bytes());
-    let mut hex = String::with_capacity(64);
-    for b in digest {
-        hex.push_str(&format!("{b:02x}"));
-    }
-    hex
+    format!("{:x}", Sha256::digest(input.as_bytes()))
 }
 
 /// Constant-time byte-slice comparison to avoid timing side-channels on token checks.

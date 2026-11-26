@@ -35,15 +35,6 @@ pub async fn list_discovered_model_sources() -> Result<Vec<ExternalModelSource>,
 }
 
 #[tauri::command]
-pub async fn inspect_gguf_file(path: String) -> Result<GgufMetadata, String> {
-    let p = PathBuf::from(path);
-    tokio::task::spawn_blocking(move || parse_gguf_file(&p))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 pub async fn check_draft_model_compatibility(
     main_path: String,
     draft_path: String,
@@ -246,11 +237,8 @@ pub async fn read_text_file_preview(
                 allowed_roots.push(ext.path);
             }
         }
-        let in_allowed_root = allowed_roots.iter().any(|root| {
-            std::fs::canonicalize(root)
-                .map(|r| canon.starts_with(r))
-                .unwrap_or(false)
-        });
+        let in_allowed_root =
+            bibulm_core::canonical_file_within(&canon, &allowed_roots, &[]).is_some();
         if !in_allowed_root {
             return Err("Access denied: file is outside configured model/template directories.".to_string());
         }

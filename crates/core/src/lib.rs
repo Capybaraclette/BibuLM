@@ -11,8 +11,8 @@ pub mod secrets;
 
 pub use config::{
     AppSettings, ExternalModelSource, ExternalSourceKind, GuardrailLevel, LinkAccessPolicy,
-    LinkConfig, data_dir_settings_default, default_data_dir, discover_external_model_sources,
-    legacy_data_dir,
+    LinkConfig, canonical_file_within, data_dir_settings_default, default_data_dir,
+    discover_external_model_sources,
 };
 pub use db::{
     ApiTokenRecord, BenchmarkRunRecord, Database, DbError, DownloadRecord, InstalledRuntimeRecord,

@@ -1,4 +1,4 @@
-use crate::secrets::{constant_time_eq, decrypt_secret, encrypt_secret, mask_api_token, sha256_hex};
+use crate::secrets::{decrypt_secret, encrypt_secret, mask_api_token, sha256_hex};
 use crate::{AppSettings, LoadConfig, MemoryPlacementReport};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -132,6 +132,7 @@ impl Database {
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
             PRAGMA foreign_keys = ON;
 
             CREATE TABLE IF NOT EXISTS kv_settings (
@@ -164,6 +165,7 @@ impl Database {
                 last_used_at TEXT,
                 enabled INTEGER NOT NULL DEFAULT 1
             );
+            CREATE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash);
 
             CREATE TABLE IF NOT EXISTS installed_runtimes (
                 id TEXT PRIMARY KEY,
@@ -216,54 +218,6 @@ impl Database {
             "#,
         )?;
 
-        Self::migrate_api_tokens(&conn)?;
-        Self::migrate_download_history(&conn)?;
-        Ok(())
-    }
-
-    fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, DbError> {
-        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-        let cols = stmt.query_map([], |r| r.get::<_, String>(1))?;
-        for c in cols {
-            if c? == column {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    fn migrate_api_tokens(conn: &Connection) -> Result<(), DbError> {
-        if !Self::table_has_column(conn, "api_tokens", "token_hash")? {
-            conn.execute("ALTER TABLE api_tokens ADD COLUMN token_hash TEXT", [])?;
-        }
-        if !Self::table_has_column(conn, "api_tokens", "token_prefix")? {
-            conn.execute("ALTER TABLE api_tokens ADD COLUMN token_prefix TEXT", [])?;
-        }
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash)",
-            [],
-        )?;
-
-        let mut stmt = conn.prepare("SELECT id, token FROM api_tokens WHERE token_hash IS NULL")?;
-        let pending: Vec<(String, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .filter_map(Result::ok)
-            .collect();
-        for (id, raw_tok) in pending {
-            let hash = sha256_hex(&raw_tok);
-            let masked = mask_api_token(&raw_tok);
-            conn.execute(
-                "UPDATE api_tokens SET token_hash = ?1, token_prefix = ?2, token = ?2 WHERE id = ?3",
-                params![hash, masked, id],
-            )?;
-        }
-        Ok(())
-    }
-
-    fn migrate_download_history(conn: &Connection) -> Result<(), DbError> {
-        if !Self::table_has_column(conn, "download_history", "files_json")? {
-            conn.execute("ALTER TABLE download_history ADD COLUMN files_json TEXT", [])?;
-        }
         Ok(())
     }
 
@@ -338,12 +292,6 @@ impl Database {
              ON CONFLICT(model_id) DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at",
             params![model_id, json, now],
         )?;
-        Ok(())
-    }
-
-    pub fn delete_model_preset(&self, model_id: &str) -> Result<(), DbError> {
-        let conn = self.conn.lock().map_err(|_| DbError::LockPoisoned)?;
-        conn.execute("DELETE FROM model_presets WHERE model_id = ?1", params![model_id])?;
         Ok(())
     }
 
@@ -472,30 +420,22 @@ impl Database {
         }
         let incoming_hash = sha256_hex(incoming);
         let conn = self.conn.lock().map_err(|_| DbError::LockPoisoned)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, token_hash, token FROM api_tokens WHERE enabled = 1",
-        )?;
-        let rows: Vec<(String, Option<String>, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .filter_map(Result::ok)
-            .collect();
-        drop(stmt);
-
-        for (id, hash_opt, tok_fallback) in rows {
-            let matched = match hash_opt {
-                Some(ref h) => constant_time_eq(h.as_bytes(), incoming_hash.as_bytes()),
-                None => constant_time_eq(tok_fallback.as_bytes(), incoming.as_bytes()),
-            };
-            if matched {
-                let now = Utc::now().to_rfc3339();
-                let _ = conn.execute(
-                    "UPDATE api_tokens SET last_used_at = ?1 WHERE id = ?2",
-                    params![now, id],
-                );
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        // Looking up the SHA-256 of the token leaks nothing useful through timing.
+        let id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM api_tokens WHERE enabled = 1 AND token_hash = ?1",
+                params![incoming_hash],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(id) = id else {
+            return Ok(false);
+        };
+        let _ = conn.execute(
+            "UPDATE api_tokens SET last_used_at = ?1 WHERE id = ?2",
+            params![Utc::now().to_rfc3339(), id],
+        );
+        Ok(true)
     }
 
     pub fn delete_api_token(&self, id: &str) -> Result<(), DbError> {
@@ -822,18 +762,11 @@ mod tests {
     }
 
     #[test]
-    fn migrates_legacy_plaintext_tokens_and_persists_download_files_json() {
+    fn validates_hashed_tokens_and_persists_download_files_json() {
         let db = Database::open_in_memory().unwrap();
-        {
-            let conn = db.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO api_tokens (id, name, token, created_at, enabled) VALUES ('legacy-1', 'Old Key', 'rs-legacyplaintext1234567890', '2026-01-01T00:00:00Z', 1)",
-                [],
-            )
-            .unwrap();
-            Database::migrate_api_tokens(&conn).unwrap();
-        }
-        assert!(db.validate_api_token("rs-legacyplaintext1234567890").unwrap());
+        let created = db.create_api_token("Key").unwrap();
+        assert!(db.validate_api_token(&created.token).unwrap());
+        assert!(!db.validate_api_token("rs-wrong").unwrap());
         let listed = db.list_api_tokens().unwrap();
         assert!(listed[0].token.contains("••••"));
 
