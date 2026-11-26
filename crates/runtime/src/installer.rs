@@ -354,6 +354,9 @@ fn extract_targz_safely(archive_path: &Path, dest_dir: &Path) -> Result<(), Inst
     let file = File::open(archive_path)?;
     let gz = GzDecoder::new(file);
     let mut archive = Archive::new(gz);
+    let mut deferred_hardlinks: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut deferred_symlinks: Vec<(PathBuf, PathBuf)> = Vec::new();
+
     for entry_res in archive.entries()? {
         let mut entry = entry_res?;
         let rel = entry.path()?.into_owned();
@@ -361,7 +364,22 @@ fn extract_targz_safely(archive_path: &Path, dest_dir: &Path) -> Result<(), Inst
             continue;
         }
         let kind = entry.header().entry_type();
-        if kind.is_symlink() || kind.is_hard_link() {
+        if kind.is_symlink() {
+            if let Ok(Some(target)) = entry.link_name() {
+                let target_buf = target.into_owned();
+                if is_safe_symlink_target(&rel, &target_buf) {
+                    deferred_symlinks.push((rel, target_buf));
+                }
+            }
+            continue;
+        }
+        if kind.is_hard_link() {
+            if let Ok(Some(target)) = entry.link_name() {
+                let target_buf = target.into_owned();
+                if is_safe_relative_path(&target_buf) {
+                    deferred_hardlinks.push((rel, target_buf));
+                }
+            }
             continue;
         }
         let out_path = dest_dir.join(&rel);
@@ -380,7 +398,67 @@ fn extract_targz_safely(archive_path: &Path, dest_dir: &Path) -> Result<(), Inst
             }
         }
     }
+
+    // Materialize links after regular files so directory symlinks can never redirect writes.
+    for (rel, target) in deferred_hardlinks {
+        let src = dest_dir.join(&target);
+        let dst = dest_dir.join(&rel);
+        if src.is_file() {
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let _ = fs::remove_file(&dst);
+            if fs::hard_link(&src, &dst).is_err() {
+                let _ = fs::copy(&src, &dst);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    for (rel, target) in deferred_symlinks {
+        let dst = dest_dir.join(&rel);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let _ = fs::remove_file(&dst);
+        std::os::unix::fs::symlink(&target, &dst)?;
+    }
+
+    #[cfg(not(unix))]
+    let _ = deferred_symlinks;
+
     Ok(())
+}
+
+/// Ensures a tar symlink target is relative and stays within the archive root when resolved from `rel_link`.
+fn is_safe_symlink_target(rel_link: &Path, target: &Path) -> bool {
+    if target.as_os_str().is_empty() || target.is_absolute() {
+        return false;
+    }
+    let mut depth: usize = 0;
+    if let Some(parent) = rel_link.parent() {
+        for c in parent.components() {
+            match c {
+                Component::Normal(_) => depth += 1,
+                Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => return false,
+            }
+        }
+    }
+    for c in target.components() {
+        match c {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if depth == 0 {
+                    return false;
+                }
+                depth -= 1;
+            }
+            Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    true
 }
 
 fn extract_zip_safely(zip_path: &Path, dest_dir: &Path) -> Result<(), InstallerError> {
@@ -520,6 +598,76 @@ mod tests {
         extract_archive_safely(&tgz_path, &dest).unwrap();
         assert!(find_executable(&dest, &["llama-server"]).is_some());
         assert!(find_executable(&dest, &["llama-bench"]).is_some());
+
+        // 1b. Verify symlink safety validation & Unix symlink extraction in tar.gz
+        assert!(is_safe_symlink_target(
+            Path::new("llama-b12777/libllama.so.0"),
+            Path::new("libllama.so.0.0.12777")
+        ));
+        assert!(is_safe_symlink_target(
+            Path::new("build/bin/libfoo.so"),
+            Path::new("../lib/libfoo.so.1")
+        ));
+        assert!(!is_safe_symlink_target(
+            Path::new("llama-b12777/escape"),
+            Path::new("../../etc/passwd")
+        ));
+        assert!(!is_safe_symlink_target(
+            Path::new("llama-b12777/abs"),
+            Path::new("/etc/passwd")
+        ));
+
+        let sym_tgz = tmp.join("symlink.tar.gz");
+        {
+            let file = File::create(&sym_tgz).unwrap();
+            let enc = GzEncoder::new(file, Compression::default());
+            let mut builder = tar::Builder::new(enc);
+
+            // Symlink appears BEFORE the target file, just like real tarballs can do
+            let mut hs = tar::Header::new_gnu();
+            hs.set_entry_type(tar::EntryType::Symlink);
+            hs.set_size(0);
+            hs.set_mode(0o777);
+            hs.set_cksum();
+            builder
+                .append_link(&mut hs, "llama-b12777/libllama.so.0", "libllama.so.0.0.12777")
+                .unwrap();
+
+            // Traversal symlink must be ignored
+            let mut h_bad = tar::Header::new_gnu();
+            h_bad.set_entry_type(tar::EntryType::Symlink);
+            h_bad.set_size(0);
+            h_bad.set_mode(0o777);
+            h_bad.set_cksum();
+            builder
+                .append_link(&mut h_bad, "llama-b12777/evil", "../../etc/passwd")
+                .unwrap();
+
+            let lib_bytes = b"ELF";
+            let mut hlib = tar::Header::new_gnu();
+            hlib.set_size(lib_bytes.len() as u64);
+            hlib.set_mode(0o755);
+            hlib.set_cksum();
+            builder
+                .append_data(&mut hlib, "llama-b12777/libllama.so.0.0.12777", &lib_bytes[..])
+                .unwrap();
+
+            builder.finish().unwrap();
+        }
+        let sym_dest = tmp.join("sym_out");
+        fs::create_dir_all(&sym_dest).unwrap();
+        extract_archive_safely(&sym_tgz, &sym_dest).unwrap();
+        assert!(sym_dest.join("llama-b12777/libllama.so.0.0.12777").is_file());
+        assert!(!sym_dest.join("llama-b12777/evil").exists());
+        #[cfg(unix)]
+        {
+            let link_meta = fs::symlink_metadata(sym_dest.join("llama-b12777/libllama.so.0")).unwrap();
+            assert!(link_meta.file_type().is_symlink());
+            assert_eq!(
+                fs::read(sym_dest.join("llama-b12777/libllama.so.0")).unwrap(),
+                b"ELF"
+            );
+        }
 
         // 2. Build a zip archive and verify extraction
         let zip_path = tmp.join("test.zip");

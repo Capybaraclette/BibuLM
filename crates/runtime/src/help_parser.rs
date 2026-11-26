@@ -23,14 +23,7 @@ pub async fn discover_runtime_cli_flags(server_exe: &Path) -> Result<Vec<Discove
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    if let Some(dir) = server_exe.parent() {
-        cmd.current_dir(dir);
-    }
-    #[cfg(target_os = "windows")]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    crate::configure_runtime_command(&mut cmd, server_exe);
 
     let output = tokio::time::timeout(Duration::from_secs(6), cmd.output())
         .await

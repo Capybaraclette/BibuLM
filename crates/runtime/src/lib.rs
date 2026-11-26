@@ -24,7 +24,9 @@ pub use installer::{
     register_custom_runtime, resolve_bench_exe, runtime_family, uninstall_runtime,
 };
 pub use placement_parser::{parse_placement_line, parse_placement_logs};
-pub use supervisor::{LoadedModelInfo, ModelSupervisor, ServerLogEntry, SupervisorError};
+pub use supervisor::{
+    LoadedModelInfo, ModelSupervisor, ServerLogEntry, SupervisorError, configure_runtime_command,
+};
 pub use telemetry::{
     LlamaServerMetrics, LlamaSlotInfo, ParsedPrometheusMetrics, fetch_llama_server_metrics,
     parse_prometheus_metrics,

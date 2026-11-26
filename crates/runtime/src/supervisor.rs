@@ -221,25 +221,7 @@ impl ModelSupervisor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        if let Some(dir) = server_exe.parent() {
-            cmd.current_dir(dir);
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-
-        #[cfg(target_os = "linux")]
-        unsafe {
-            cmd.pre_exec(|| {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+        configure_runtime_command(&mut cmd, server_exe);
 
         let mut child = cmd.spawn().map_err(|source| SupervisorError::SpawnFailed {
             path: server_exe.to_string_lossy().into_owned(),
@@ -268,7 +250,7 @@ impl ModelSupervisor {
         let startup_tail = Arc::new(Mutex::new(VecDeque::<String>::with_capacity(40)));
 
         // Spawn stdout/stderr pump tasks
-        if let Some(stdout) = child.stdout.take() {
+        let mut stdout_pump = child.stdout.take().map(|stdout| {
             spawn_stream_pump(
                 stdout,
                 model_id.clone(),
@@ -277,9 +259,9 @@ impl ModelSupervisor {
                 startup_tail.clone(),
                 self.log_tx.clone(),
                 self.log_ring.clone(),
-            );
-        }
-        if let Some(stderr) = child.stderr.take() {
+            )
+        });
+        let mut stderr_pump = child.stderr.take().map(|stderr| {
             spawn_stream_pump(
                 stderr,
                 model_id.clone(),
@@ -288,8 +270,8 @@ impl ModelSupervisor {
                 startup_tail.clone(),
                 self.log_tx.clone(),
                 self.log_ring.clone(),
-            );
-        }
+            )
+        });
 
         // Poll `/health` until 200 OK or process exits or 180s timeout.
         let health_url = format!("http://127.0.0.1:{port}/health");
@@ -301,13 +283,12 @@ impl ModelSupervisor {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
         loop {
             if let Ok(Some(status)) = child.try_wait() {
-                let tail = startup_tail
-                    .lock()
-                    .await
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let tail = drain_pumps_and_tail(
+                    stdout_pump.take(),
+                    stderr_pump.take(),
+                    &startup_tail,
+                )
+                .await;
                 self.push_log(
                     "ERROR",
                     "SUPERVISOR",
@@ -330,13 +311,13 @@ impl ModelSupervisor {
 
             if tokio::time::Instant::now() >= deadline {
                 let _ = child.kill().await;
-                let tail = startup_tail
-                    .lock()
-                    .await
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let _ = child.wait().await;
+                let tail = drain_pumps_and_tail(
+                    stdout_pump.take(),
+                    stderr_pump.take(),
+                    &startup_tail,
+                )
+                .await;
                 return Err(SupervisorError::StartupTimeout { tail });
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -627,6 +608,92 @@ async fn snapshot_instance(inst: &ManagedInstance) -> LoadedModelInfo {
     }
 }
 
+/// Configures working directory, shared-library search paths, and parent-death guards
+/// for `llama-server` / `llama-bench` child processes across Windows, Linux, and macOS.
+pub fn configure_runtime_command(cmd: &mut Command, exe_path: &Path) {
+    if let Some(dir) = exe_path.parent() {
+        cmd.current_dir(dir);
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let var_name = if cfg!(target_os = "macos") {
+                "DYLD_LIBRARY_PATH"
+            } else {
+                "LD_LIBRARY_PATH"
+            };
+            let mut search_dirs: Vec<std::path::PathBuf> = vec![dir.to_path_buf()];
+            let sub_lib = dir.join("lib");
+            if sub_lib.is_dir() {
+                search_dirs.push(sub_lib);
+            }
+            if let Some(parent) = dir.parent() {
+                let parent_lib = parent.join("lib");
+                if parent_lib.is_dir() {
+                    search_dirs.push(parent_lib);
+                }
+                if dir_contains_shared_libs(parent) {
+                    search_dirs.push(parent.to_path_buf());
+                }
+            }
+            if let Some(existing) = std::env::var_os(var_name) {
+                for p in std::env::split_paths(&existing) {
+                    if !p.as_os_str().is_empty() && !search_dirs.contains(&p) {
+                        search_dirs.push(p);
+                    }
+                }
+            }
+            if let Ok(joined) = std::env::join_paths(search_dirs) {
+                cmd.env(var_name, joined);
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn dir_contains_shared_libs(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        name.contains(".so") || name.ends_with(".dylib")
+    })
+}
+
+async fn drain_pumps_and_tail(
+    stdout_pump: Option<tokio::task::JoinHandle<()>>,
+    stderr_pump: Option<tokio::task::JoinHandle<()>>,
+    startup_tail: &Arc<Mutex<VecDeque<String>>>,
+) -> String {
+    for pump in [stdout_pump, stderr_pump].into_iter().flatten() {
+        let _ = tokio::time::timeout(Duration::from_millis(500), pump).await;
+    }
+    startup_tail
+        .lock()
+        .await
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn spawn_stream_pump<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     stream: R,
     source_label: String,
@@ -635,7 +702,7 @@ fn spawn_stream_pump<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     tail: Arc<Mutex<VecDeque<String>>>,
     log_tx: broadcast::Sender<ServerLogEntry>,
     log_ring: Arc<Mutex<VecDeque<ServerLogEntry>>>,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut lines = BufReader::new(stream).lines();
         while let Ok(Some(line)) = lines.next_line().await {
@@ -678,7 +745,7 @@ fn spawn_stream_pump<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
             }
             let _ = log_tx.send(entry);
         }
-    });
+    })
 }
 
 fn allocate_ephemeral_port() -> Option<u16> {
@@ -861,5 +928,37 @@ mod tests {
         assert_eq!(info2.pid, expected_pid);
 
         sup.unload_all().await;
+    }
+
+    #[tokio::test]
+    async fn early_exit_drains_stderr_tail() {
+        let mut cmd = if cfg!(windows) {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "echo shared lib missing 1>&2 & exit /B 127"]);
+            c
+        } else {
+            let mut c = Command::new("sh");
+            c.args(["-c", "echo 'shared lib missing' >&2; exit 127"]);
+            c
+        };
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        let placement = Arc::new(RwLock::new(MemoryPlacementReport::default()));
+        let dirty = Arc::new(AtomicBool::new(false));
+        let tail = Arc::new(Mutex::new(VecDeque::with_capacity(40)));
+        let (tx, _) = broadcast::channel(16);
+        let ring = Arc::new(Mutex::new(VecDeque::with_capacity(16)));
+
+        let out_pump = child.stdout.take().map(|s| {
+            spawn_stream_pump(s, "t".into(), placement.clone(), dirty.clone(), tail.clone(), tx.clone(), ring.clone())
+        });
+        let err_pump = child.stderr.take().map(|s| {
+            spawn_stream_pump(s, "t".into(), placement, dirty, tail.clone(), tx, ring)
+        });
+
+        let status = child.wait().await.unwrap();
+        assert_eq!(status.code(), Some(127));
+        let drained = drain_pumps_and_tail(out_pump, err_pump, &tail).await;
+        assert!(drained.contains("shared lib missing"), "got tail: {drained:?}");
     }
 }

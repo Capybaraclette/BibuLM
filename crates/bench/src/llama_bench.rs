@@ -203,23 +203,7 @@ pub async fn run_llama_bench(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    if let Some(dir) = bench_exe.parent() {
-        cmd.current_dir(dir);
-    }
-    #[cfg(target_os = "windows")]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    #[cfg(target_os = "linux")]
-    unsafe {
-        cmd.pre_exec(|| {
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    bibulm_runtime::configure_runtime_command(&mut cmd, bench_exe);
 
     let output = tokio::time::timeout(Duration::from_secs(900), cmd.output())
         .await
