@@ -223,8 +223,32 @@ pub struct GgufMetadata {
     pub embedding_length: Option<u32>,
     pub head_count: Option<u32>,
     pub head_count_kv: Option<u32>,
+    /// Per-layer KV head counts when `{arch}.attention.head_count_kv` is stored as a GGUF array
+    /// (e.g. hybrid SSM/conv models with `0` on non-attention layers, or Gemma 4 with differing SWA/full KV heads).
+    #[serde(default)]
+    pub head_count_kv_per_layer: Vec<u32>,
     pub key_length: Option<u32>,
     pub value_length: Option<u32>,
+    #[serde(default)]
+    pub key_length_swa: Option<u32>,
+    #[serde(default)]
+    pub value_length_swa: Option<u32>,
+    #[serde(default)]
+    pub sliding_window: Option<u32>,
+    #[serde(default)]
+    pub sliding_window_pattern_interval: Option<u32>,
+    #[serde(default)]
+    pub sliding_window_pattern_layers: Vec<bool>,
+    #[serde(default)]
+    pub shared_kv_layers: Option<u32>,
+    #[serde(default)]
+    pub kv_lora_rank: Option<u32>,
+    #[serde(default)]
+    pub key_length_mla: Option<u32>,
+    #[serde(default)]
+    pub value_length_mla: Option<u32>,
+    #[serde(default)]
+    pub rope_dimension_count: Option<u32>,
     pub rope_freq_base: Option<f32>,
     pub expert_count: Option<u32>,
     pub expert_used_count: Option<u32>,
@@ -277,6 +301,8 @@ enum ScalarValue {
     #[allow(dead_code)]
     Bool(bool),
     String(String),
+    U32Array(Vec<u32>),
+    BoolArray(Vec<bool>),
 }
 
 impl ScalarValue {
@@ -308,6 +334,21 @@ impl ScalarValue {
     fn as_str(&self) -> Option<&str> {
         match self {
             Self::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    fn as_u32_vec(&self) -> Option<Vec<u32>> {
+        match self {
+            Self::U32Array(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    fn as_bool_vec(&self) -> Option<Vec<bool>> {
+        match self {
+            Self::BoolArray(v) => Some(v.clone()),
+            Self::U32Array(v) => Some(v.iter().map(|&x| x != 0).collect()),
             _ => None,
         }
     }
@@ -362,11 +403,35 @@ pub fn parse_gguf_file(path: &Path) -> Result<GgufMetadata, GgufError> {
     let context_length = arch_key("context_length").and_then(ScalarValue::as_u32);
     let embedding_length = arch_key("embedding_length").and_then(ScalarValue::as_u32);
     let head_count = arch_key("attention.head_count").and_then(ScalarValue::as_u32);
-    let head_count_kv = arch_key("attention.head_count_kv")
+    let head_count_kv_val = arch_key("attention.head_count_kv");
+    let head_count_kv_per_layer = head_count_kv_val
+        .and_then(ScalarValue::as_u32_vec)
+        .unwrap_or_default();
+    let head_count_kv = head_count_kv_val
         .and_then(ScalarValue::as_u32)
+        .or_else(|| {
+            head_count_kv_per_layer
+                .iter()
+                .copied()
+                .filter(|&h| h > 0)
+                .max()
+        })
         .or(head_count);
     let key_length = arch_key("attention.key_length").and_then(ScalarValue::as_u32);
     let value_length = arch_key("attention.value_length").and_then(ScalarValue::as_u32);
+    let key_length_swa = arch_key("attention.key_length_swa").and_then(ScalarValue::as_u32);
+    let value_length_swa = arch_key("attention.value_length_swa").and_then(ScalarValue::as_u32);
+    let sliding_window = arch_key("attention.sliding_window").and_then(ScalarValue::as_u32);
+    let swa_pattern_val = arch_key("attention.sliding_window_pattern");
+    let sliding_window_pattern_interval = swa_pattern_val.and_then(ScalarValue::as_u32);
+    let sliding_window_pattern_layers = swa_pattern_val
+        .and_then(ScalarValue::as_bool_vec)
+        .unwrap_or_default();
+    let shared_kv_layers = arch_key("attention.shared_kv_layers").and_then(ScalarValue::as_u32);
+    let kv_lora_rank = arch_key("attention.kv_lora_rank").and_then(ScalarValue::as_u32);
+    let key_length_mla = arch_key("attention.key_length_mla").and_then(ScalarValue::as_u32);
+    let value_length_mla = arch_key("attention.value_length_mla").and_then(ScalarValue::as_u32);
+    let rope_dimension_count = arch_key("rope.dimension_count").and_then(ScalarValue::as_u32);
     let rope_freq_base = arch_key("rope.freq_base").and_then(ScalarValue::as_f32);
     let expert_count = arch_key("expert_count").and_then(ScalarValue::as_u32);
     let expert_used_count = arch_key("expert_used_count").and_then(ScalarValue::as_u32);
@@ -455,8 +520,19 @@ pub fn parse_gguf_file(path: &Path) -> Result<GgufMetadata, GgufError> {
         embedding_length,
         head_count,
         head_count_kv,
+        head_count_kv_per_layer,
         key_length,
         value_length,
+        key_length_swa,
+        value_length_swa,
+        sliding_window,
+        sliding_window_pattern_interval,
+        sliding_window_pattern_layers,
+        shared_kv_layers,
+        kv_lora_rank,
+        key_length_mla,
+        value_length_mla,
+        rope_dimension_count,
         rope_freq_base,
         expert_count,
         expert_used_count,
@@ -1110,6 +1186,38 @@ fn read_or_skip_value<R: Read>(
             if count > MAX_ARRAY_SKIP {
                 return Err(GgufError::Malformed(format!("array count {count} too large")));
             }
+            // Retain small per-layer numeric/bool metadata arrays (e.g. head_count_kv, sliding_window_pattern).
+            const MAX_KEEP_ARRAY_LEN: u64 = 1024;
+            if keep && count <= MAX_KEEP_ARRAY_LEN {
+                match elem_type {
+                    7 => {
+                        let mut vals = Vec::with_capacity(count as usize);
+                        for _ in 0..count {
+                            vals.push(read_u8(r)? != 0);
+                        }
+                        return Ok(Some(ScalarValue::BoolArray(vals)));
+                    }
+                    0 | 1 | 2 | 3 | 4 | 5 | 10 | 11 => {
+                        let mut vals = Vec::with_capacity(count as usize);
+                        for _ in 0..count {
+                            let v = match elem_type {
+                                0 => read_u8(r)? as u32,
+                                1 => read_i8(r)?.max(0) as u32,
+                                2 => read_u16(r)? as u32,
+                                3 => read_i16(r)?.max(0) as u32,
+                                4 => read_u32(r)?,
+                                5 => read_i32(r)?.max(0) as u32,
+                                10 => read_u64(r)?.min(u32::MAX as u64) as u32,
+                                11 => read_i64(r)?.clamp(0, u32::MAX as i64) as u32,
+                                _ => unreachable!(),
+                            };
+                            vals.push(v);
+                        }
+                        return Ok(Some(ScalarValue::U32Array(vals)));
+                    }
+                    _ => {}
+                }
+            }
             if let Some(elem_sz) = fixed_type_size(elem_type) {
                 skip_bytes(r, count.saturating_mul(elem_sz))?;
             } else {
@@ -1297,8 +1405,19 @@ mod tests {
                 embedding_length: None,
                 head_count: None,
                 head_count_kv: None,
+                head_count_kv_per_layer: Vec::new(),
                 key_length: None,
                 value_length: None,
+                key_length_swa: None,
+                value_length_swa: None,
+                sliding_window: None,
+                sliding_window_pattern_interval: None,
+                sliding_window_pattern_layers: Vec::new(),
+                shared_kv_layers: None,
+                kv_lora_rank: None,
+                key_length_mla: None,
+                value_length_mla: None,
+                rope_dimension_count: None,
                 rope_freq_base: None,
                 expert_count: None,
                 expert_used_count: None,
@@ -1389,5 +1508,56 @@ mod tests {
         assert_eq!(parsed.block_count, Some(24));
         assert_eq!(parsed.effective_block_count, Some(48));
         assert_eq!(parsed.effective_layer_count(), Some(48));
+    }
+
+    #[test]
+    fn parses_per_layer_kv_and_swa_metadata_arrays() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"GGUF");
+        data.extend_from_slice(&3u32.to_le_bytes());
+        data.extend_from_slice(&0u64.to_le_bytes());
+        data.extend_from_slice(&10u64.to_le_bytes());
+
+        write_kv_str(&mut data, "general.architecture", "gemma4");
+        write_kv_u32(&mut data, "gemma4.block_count", 6);
+        write_kv_u32(&mut data, "gemma4.attention.head_count", 16);
+        // Per-layer u32 array for head_count_kv: [8, 8, 8, 8, 8, 2]
+        write_str(&mut data, "gemma4.attention.head_count_kv");
+        data.extend_from_slice(&9u32.to_le_bytes()); // ARRAY
+        data.extend_from_slice(&4u32.to_le_bytes()); // UINT32
+        data.extend_from_slice(&6u64.to_le_bytes());
+        for h in [8u32, 8, 8, 8, 8, 2] {
+            data.extend_from_slice(&h.to_le_bytes());
+        }
+        write_kv_u32(&mut data, "gemma4.attention.sliding_window", 1024);
+        // Per-layer bool array for sliding_window_pattern: [T, T, T, T, T, F]
+        write_str(&mut data, "gemma4.attention.sliding_window_pattern");
+        data.extend_from_slice(&9u32.to_le_bytes()); // ARRAY
+        data.extend_from_slice(&7u32.to_le_bytes()); // BOOL
+        data.extend_from_slice(&6u64.to_le_bytes());
+        for b in [1u8, 1, 1, 1, 1, 0] {
+            data.push(b);
+        }
+        write_kv_u32(&mut data, "gemma4.attention.key_length", 512);
+        write_kv_u32(&mut data, "gemma4.attention.key_length_swa", 256);
+        write_kv_u32(&mut data, "gemma4.attention.value_length_swa", 256);
+        write_kv_u32(&mut data, "gemma4.attention.shared_kv_layers", 2);
+
+        let tmp = std::env::temp_dir().join(format!("test_gemma4_arr_{}.gguf", uuid::Uuid::new_v4()));
+        File::create(&tmp).unwrap().write_all(&data).unwrap();
+        let parsed = parse_gguf_file(&tmp).unwrap();
+        let _ = fs::remove_file(&tmp);
+
+        assert_eq!(parsed.head_count_kv, Some(8));
+        assert_eq!(parsed.head_count_kv_per_layer, vec![8, 8, 8, 8, 8, 2]);
+        assert_eq!(parsed.sliding_window, Some(1024));
+        assert_eq!(
+            parsed.sliding_window_pattern_layers,
+            vec![true, true, true, true, true, false]
+        );
+        assert_eq!(parsed.key_length, Some(512));
+        assert_eq!(parsed.key_length_swa, Some(256));
+        assert_eq!(parsed.value_length_swa, Some(256));
+        assert_eq!(parsed.shared_kv_layers, Some(2));
     }
 }

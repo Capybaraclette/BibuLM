@@ -1,5 +1,6 @@
 use crate::{
-    GgufMetadata, GuardrailLevel, KvQuantType, LoadConfig, MemoryComponentBreakdown, MoeOffloadMode,
+    CliFlagValue, FlashAttentionMode, GgufMetadata, GuardrailLevel, KvQuantType, LoadConfig,
+    MemoryComponentBreakdown, MoeOffloadMode,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -74,11 +75,43 @@ pub struct MemoryEstimate {
     pub vram_sample_count: u32,
 }
 
-/// Computes accurate KV cache (+ hybrid SSM/DeltaNet recurrent state) bytes from GGUF metadata and LoadConfig.
+fn pad_kv_cells(cells: u64) -> u64 {
+    if cells == 0 {
+        0
+    } else {
+        cells.div_ceil(256) * 256
+    }
+}
+
+fn layer_uses_swa(meta: &GgufMetadata, il: usize) -> bool {
+    if !meta.sliding_window.is_some_and(|w| w > 0) {
+        return false;
+    }
+    if !meta.sliding_window_pattern_layers.is_empty() {
+        return meta
+            .sliding_window_pattern_layers
+            .get(il)
+            .copied()
+            .unwrap_or(false);
+    }
+    if let Some(pat) = meta.sliding_window_pattern_interval {
+        return pat == 0 || (il + 1) % (pat as usize) != 0;
+    }
+    // Architecture-specific interleaved SWA defaults used by llama.cpp when pattern key is omitted.
+    match meta.architecture.as_deref() {
+        Some("gemma2" | "gpt-oss" | "gptoss") => (il + 1) % 2 != 0,
+        Some("gemma3" | "gemma3n") => (il + 1) % 6 != 0,
+        Some("cohere2") => (il + 1) % 4 != 0,
+        _ => true,
+    }
+}
+
+/// Computes accurate KV cache (+ SWA, shared-KV, MLA, and hybrid SSM/DeltaNet recurrent state)
+/// bytes from GGUF metadata and LoadConfig, matching `llama.cpp` allocation rules.
 pub fn estimate_kv_cache_bytes(meta: &GgufMetadata, config: &LoadConfig) -> f64 {
-    let n_layers = meta.effective_layer_count().unwrap_or(32) as f64;
-    let n_kv_heads = meta.head_count_kv.or(meta.head_count).unwrap_or(8) as f64;
-    let head_dim_k = meta
+    let n_layers = meta.effective_layer_count().unwrap_or(32).max(1) as usize;
+    let default_kv_heads = meta.head_count_kv.or(meta.head_count).unwrap_or(8);
+    let default_head_dim_k = meta
         .key_length
         .or_else(|| {
             let embd = meta.embedding_length?;
@@ -86,7 +119,10 @@ pub fn estimate_kv_cache_bytes(meta: &GgufMetadata, config: &LoadConfig) -> f64 
             (heads > 0).then_some(embd / heads)
         })
         .unwrap_or(128) as f64;
-    let head_dim_v = meta.value_length.map(|v| v as f64).unwrap_or(head_dim_k);
+    let default_head_dim_v = meta
+        .value_length
+        .map(|v| v as f64)
+        .unwrap_or(default_head_dim_k);
 
     let k_bpe = config
         .cache_type_k
@@ -97,33 +133,125 @@ pub fn estimate_kv_cache_bytes(meta: &GgufMetadata, config: &LoadConfig) -> f64 
         .unwrap_or(KvQuantType::F16)
         .bytes_per_element();
 
-    let ctx = config.ctx_size as f64;
-    let slots = if config.unified_kv_cache {
-        1.0
-    } else {
-        config.parallel_slots.max(1) as f64
-    };
+    // In llama-server, `-c` (`ctx_size`) is always the total KV pool across all slots
+    // (`n_ctx_seq = n_ctx / n_seq_max` when non-unified, `n_ctx_seq = n_ctx` when unified).
+    let ctx = config.ctx_size as u64;
+    let slots = config.parallel_slots.max(1) as u64;
+    let ubatch = config.ubatch_size.max(256) as u64;
+    let full_tokens = ctx as f64;
 
-    let per_attn_layer_bytes = ctx * slots * n_kv_heads * (head_dim_k * k_bpe + head_dim_v * v_bpe);
+    let swa_full = matches!(
+        config.cli_flags.get("--swa-full"),
+        Some(CliFlagValue::Flag(true))
+    ) || config
+        .extra_args
+        .iter()
+        .any(|a| a.split_whitespace().any(|t| t == "--swa-full"));
 
-    let mut total_bytes = if let Some(interval) = meta.full_attention_interval
-        && interval > 1
+    let swa_tokens = if let Some(n_swa) = meta.sliding_window.filter(|&w| w > 0)
+        && !swa_full
     {
-        // Hybrid SSM / Gated DeltaNet + periodic full-attention architecture (e.g. Qwen3.5)
-        let n_attn_layers = (n_layers / interval as f64).max(1.0);
-        let n_ssm_layers = (n_layers - n_attn_layers).max(0.0);
-        let ssm_inner = meta
-            .ssm_inner_size
-            .unwrap_or_else(|| meta.embedding_length.unwrap_or(4096)) as f64;
-        let ssm_state = meta.ssm_state_size.unwrap_or(128) as f64;
-        let ssm_conv = meta.ssm_conv_kernel.unwrap_or(4).saturating_sub(1).max(1) as f64;
-        // Recurrent state matrix (S) + short conv state per SSM layer (F32), constant wrt context length
-        let per_ssm_layer_bytes =
-            slots * (ssm_inner * ssm_state * 4.0 + ssm_inner * 3.0 * ssm_conv * 4.0);
-        n_attn_layers * per_attn_layer_bytes + n_ssm_layers * per_ssm_layer_bytes
+        let n_swa = n_swa as u64;
+        if config.unified_kv_cache {
+            pad_kv_cells(ctx.min(n_swa.saturating_mul(slots).saturating_add(ubatch))) as f64
+        } else {
+            let ctx_per_seq = (ctx / slots).max(1);
+            (slots * pad_kv_cells(ctx_per_seq.min(n_swa.saturating_add(ubatch)))) as f64
+        }
     } else {
-        n_layers * per_attn_layer_bytes
+        full_tokens
     };
+
+    let has_ssm_meta = meta.ssm_state_size.is_some()
+        || meta.ssm_inner_size.is_some()
+        || meta.ssm_conv_kernel.is_some();
+    let ssm_inner = meta
+        .ssm_inner_size
+        .unwrap_or_else(|| meta.embedding_length.unwrap_or(4096)) as f64;
+    let ssm_state = meta.ssm_state_size.unwrap_or(128) as f64;
+    let ssm_conv = meta.ssm_conv_kernel.unwrap_or(4).saturating_sub(1).max(1) as f64;
+    // Recurrent state matrix (S) + short conv state per SSM layer (F32), fixed per concurrent slot.
+    let per_ssm_layer_bytes =
+        (slots as f64) * (ssm_inner * ssm_state * 4.0 + ssm_inner * 3.0 * ssm_conv * 4.0);
+
+    let shared_kv = (meta.shared_kv_layers.unwrap_or(0) as usize).min(n_layers);
+    let owned_kv_layers = n_layers - shared_kv;
+    let full_attn_interval = meta.full_attention_interval.filter(|&i| i > 1);
+    let use_mla_compressed = meta.kv_lora_rank.is_some_and(|r| r > 0)
+        && config.flash_attention != FlashAttentionMode::Off;
+
+    let attn_layer_bytes = |n_kv_heads: u32, is_swa: bool| -> f64 {
+        let tokens = if is_swa { swa_tokens } else { full_tokens };
+        if use_mla_compressed {
+            let lora = meta.kv_lora_rank.unwrap_or(0) as f64;
+            let rope_dim = meta.rope_dimension_count.unwrap_or(64) as f64;
+            // MLA with Flash Attention caches compressed K latent + RoPE key; V is absorbed.
+            return tokens * (lora + rope_dim) * k_bpe;
+        }
+        let (dk, dv) = if meta.kv_lora_rank.is_some_and(|r| r > 0) {
+            let dk = meta
+                .key_length_mla
+                .map(|v| v as f64)
+                .unwrap_or(default_head_dim_k);
+            let dv = meta
+                .value_length_mla
+                .map(|v| v as f64)
+                .unwrap_or(default_head_dim_v);
+            (dk, dv)
+        } else if is_swa {
+            let dk = meta
+                .key_length_swa
+                .map(|v| v as f64)
+                .unwrap_or(default_head_dim_k);
+            let dv = meta
+                .value_length_swa
+                .or(meta.key_length_swa)
+                .map(|v| v as f64)
+                .unwrap_or(default_head_dim_v);
+            (dk, dv)
+        } else {
+            (default_head_dim_k, default_head_dim_v)
+        };
+        tokens * (n_kv_heads as f64) * (dk * k_bpe + dv * v_bpe)
+    };
+
+    let mut total_bytes = 0.0;
+    for il in 0..n_layers {
+        // Trailing shared-KV layers (e.g. Gemma 4 E2B/E4B) alias earlier KV buffers.
+        if il >= owned_kv_layers {
+            continue;
+        }
+
+        if !meta.head_count_kv_per_layer.is_empty() {
+            let n_kv = meta
+                .head_count_kv_per_layer
+                .get(il)
+                .copied()
+                .unwrap_or(default_kv_heads);
+            if n_kv == 0 {
+                if has_ssm_meta {
+                    total_bytes += per_ssm_layer_bytes;
+                }
+                continue;
+            }
+            total_bytes += attn_layer_bytes(n_kv, layer_uses_swa(meta, il));
+        } else if let Some(interval) = full_attn_interval {
+            // Hybrid SSM / Gated DeltaNet + periodic full-attention architecture (e.g. Qwen3.5).
+            let interval_usize = interval as usize;
+            let is_attn = if n_layers < interval_usize {
+                il == n_layers - 1
+            } else {
+                (il + 1) % interval_usize == 0
+            };
+            if is_attn {
+                total_bytes += attn_layer_bytes(default_kv_heads, layer_uses_swa(meta, il));
+            } else {
+                total_bytes += per_ssm_layer_bytes;
+            }
+        } else {
+            total_bytes += attn_layer_bytes(default_kv_heads, layer_uses_swa(meta, il));
+        }
+    }
 
     // MTP draft context adds a small KV slice for the NextN prediction layers when active.
     if config.mtp_enabled && meta.has_mtp {
@@ -134,7 +262,7 @@ pub fn estimate_kv_cache_bytes(meta: &GgufMetadata, config: &LoadConfig) -> f64 
                 (c > 0).then_some(c)
             })
             .unwrap_or(1) as f64;
-        total_bytes += mtp_layers * per_attn_layer_bytes;
+        total_bytes += mtp_layers * attn_layer_bytes(default_kv_heads, false);
     }
 
     total_bytes
@@ -682,8 +810,19 @@ mod tests {
             embedding_length: Some(2048),
             head_count: Some(32),
             head_count_kv: Some(4),
+            head_count_kv_per_layer: Vec::new(),
             key_length: Some(128),
             value_length: Some(128),
+            key_length_swa: None,
+            value_length_swa: None,
+            sliding_window: None,
+            sliding_window_pattern_interval: None,
+            sliding_window_pattern_layers: Vec::new(),
+            shared_kv_layers: None,
+            kv_lora_rank: None,
+            key_length_mla: None,
+            value_length_mla: None,
+            rope_dimension_count: None,
             rope_freq_base: Some(1_000_000.0),
             expert_count: Some(128),
             expert_used_count: Some(8),
@@ -811,5 +950,75 @@ mod tests {
             estimate_memory_usage(&meta, &cfg_partial, 24000.0, 32000.0, GuardrailLevel::Off);
         assert!(est_partial.weights_ram_mib > 0.0);
         assert!(est_partial.kv_cache_ram_mib > 0.0);
+    }
+
+    #[test]
+    fn kv_cache_accounts_for_swa_shared_kv_and_per_layer_heads() {
+        // Gemma-4-style hybrid: 30 layers, 5 full (2 KV heads, dim 512) + 25 SWA (8 KV heads, dim 256, window 1024)
+        let mut meta = sample_moe_meta();
+        meta.architecture = Some("gemma4".into());
+        meta.block_count = Some(30);
+        meta.effective_block_count = Some(30);
+        meta.head_count = Some(16);
+        meta.head_count_kv = Some(8);
+        meta.head_count_kv_per_layer = (0..30).map(|i| if (i + 1) % 6 == 0 { 2 } else { 8 }).collect();
+        meta.key_length = Some(512);
+        meta.value_length = Some(512);
+        meta.key_length_swa = Some(256);
+        meta.value_length_swa = Some(256);
+        meta.sliding_window = Some(1024);
+        meta.sliding_window_pattern_layers = (0..30).map(|i| (i + 1) % 6 != 0).collect();
+
+        let mut cfg = LoadConfig::new("gemma4.gguf");
+        cfg.ctx_size = 131072;
+        cfg.ubatch_size = 512;
+        cfg.cache_type_k = Some(KvQuantType::Q8_0);
+        cfg.cache_type_v = Some(KvQuantType::Q8_0);
+
+        let kv_gib = estimate_kv_cache_bytes(&meta, &cfg) / (1024.0 * 1024.0 * 1024.0);
+        // 5 full * 131072 * 2 * 1024 * 1.0625 (~1.33 GiB) + 25 SWA * 1536 * 8 * 512 * 1.0625 (~0.16 GiB)
+        assert!(kv_gib > 1.3 && kv_gib < 1.7, "expected ~1.49 GiB, got {kv_gib:.2}");
+
+        // `--swa-full` expands all 25 SWA layers to full 131072 context
+        cfg.cli_flags
+            .insert("--swa-full".to_string(), CliFlagValue::Flag(true));
+        let kv_full_gib = estimate_kv_cache_bytes(&meta, &cfg) / (1024.0 * 1024.0 * 1024.0);
+        assert!(kv_full_gib > 10.0, "expected >10 GiB with --swa-full, got {kv_full_gib:.2}");
+
+        // Shared KV layers reduce owned KV layers further (e.g. last 12 layers shared)
+        cfg.cli_flags.clear();
+        meta.shared_kv_layers = Some(12);
+        let kv_shared_gib = estimate_kv_cache_bytes(&meta, &cfg) / (1024.0 * 1024.0 * 1024.0);
+        assert!(kv_shared_gib < kv_gib * 0.7);
+    }
+
+    #[test]
+    fn kv_cache_handles_mla_and_non_unified_multi_slot_without_multiplying_ctx() {
+        let mut meta = sample_moe_meta();
+        let mut cfg_u = LoadConfig::new("qwen3.gguf");
+        cfg_u.ctx_size = 32768;
+        cfg_u.parallel_slots = 4;
+        cfg_u.unified_kv_cache = true;
+        let mut cfg_s = cfg_u.clone();
+        cfg_s.unified_kv_cache = false;
+
+        // `-c` is total context in llama-server regardless of `-kvu`
+        assert_eq!(
+            estimate_kv_cache_bytes(&meta, &cfg_u),
+            estimate_kv_cache_bytes(&meta, &cfg_s)
+        );
+
+        // MLA (DeepSeek2/GLM): compressed latent KV cache is much smaller than expanded GQA
+        meta.head_count = Some(128);
+        meta.head_count_kv = Some(128);
+        meta.key_length = Some(192);
+        meta.value_length = Some(128);
+        meta.kv_lora_rank = Some(512);
+        meta.rope_dimension_count = Some(64);
+        cfg_u.flash_attention = FlashAttentionMode::Auto;
+        let mla_fa_bytes = estimate_kv_cache_bytes(&meta, &cfg_u);
+        cfg_u.flash_attention = FlashAttentionMode::Off;
+        let mla_no_fa_bytes = estimate_kv_cache_bytes(&meta, &cfg_u);
+        assert!(mla_fa_bytes * 20.0 < mla_no_fa_bytes);
     }
 }
