@@ -127,7 +127,16 @@ export const MemoryPreviewCard: React.FC<MemoryPreviewCardProps> = ({
           breakdown={estimate.breakdown}
           compact
           visionDisabledSavedMib={!config.enable_vision ? estimate.vision_available_mib : 0}
-          mtpDisabledAvailableMib={!config.mtp_enabled ? estimate.mtp_available_mib : 0}
+          mtpDisabledAvailableMib={
+            !(
+              config.mtp_enabled &&
+              (!config.mtp_spec_type ||
+                config.mtp_spec_type === 'draft-mtp' ||
+                config.mtp_spec_type === 'mtp')
+            )
+              ? estimate.mtp_available_mib
+              : 0
+          }
         />
       )}
 

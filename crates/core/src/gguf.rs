@@ -817,6 +817,15 @@ pub struct DraftCompatibilityReport {
     pub reasons: Vec<String>,
 }
 
+/// Dedicated speculative-draft GGUF architectures whose `general.architecture` intentionally
+/// differs from the main model's architecture (e.g. `dflash` paired with `inkling2_loop`).
+fn is_dedicated_draft_architecture(arch: &str) -> bool {
+    matches!(
+        arch.to_ascii_lowercase().as_str(),
+        "dflash" | "dflash2" | "dflash-draft" | "dspark" | "eagle" | "eagle3" | "medusa"
+    )
+}
+
 /// Evaluates whether a draft GGUF model is tokenizer- and size-compatible with the main GGUF model
 /// for speculative decoding (`llama-server -md`).
 pub fn check_draft_compatibility(
@@ -882,8 +891,14 @@ pub fn check_draft_compatibility(
         ));
     }
 
+    let dedicated_draft_arch = draft
+        .architecture
+        .as_deref()
+        .filter(|da| is_dedicated_draft_architecture(da));
+
     if let (Some(ma), Some(da)) = (main.architecture.as_deref(), draft.architecture.as_deref())
         && !ma.eq_ignore_ascii_case(da)
+        && dedicated_draft_arch.is_none()
     {
         has_warning = true;
         reasons.push(format!(
@@ -901,7 +916,13 @@ pub fn check_draft_compatibility(
     } else if has_warning {
         DraftCompatibilityLevel::Warning
     } else {
-        reasons.push("Tokenizer family, vocabulary size, and architecture match.".to_string());
+        if let Some(da) = dedicated_draft_arch {
+            reasons.push(format!(
+                "Tokenizer family and vocabulary size match (dedicated '{da}' draft architecture)."
+            ));
+        } else {
+            reasons.push("Tokenizer family, vocabulary size, and architecture match.".to_string());
+        }
         DraftCompatibilityLevel::Compatible
     };
 
@@ -1461,6 +1482,26 @@ mod tests {
         let rep_bad = check_draft_compatibility(&main, &bad_draft);
         assert_eq!(rep_bad.level, DraftCompatibilityLevel::Incompatible);
         assert!(!rep_bad.compatible);
+
+        // Dedicated speculative draft architectures (e.g. dflash paired with inkling2_loop)
+        // must be marked Compatible when tokenizer family, vocab size, and size match.
+        let inkling_main = write_tok_model("gpt2", "inkling2", 151936, "inkling2_loop", 10_000_000_000);
+        let dflash_draft = write_tok_model("gpt2", "inkling2", 151936, "dflash", 480_000_000);
+        let rep_dflash = check_draft_compatibility(&inkling_main, &dflash_draft);
+        assert_eq!(rep_dflash.level, DraftCompatibilityLevel::Compatible);
+        assert!(rep_dflash.compatible);
+
+        // Standard differing architectures still produce a warning.
+        let diff_arch = write_tok_model("gpt2", "qwen2", 151936, "llama", 500_000_000);
+        let rep_diff = check_draft_compatibility(&main, &diff_arch);
+        assert_eq!(rep_diff.level, DraftCompatibilityLevel::Warning);
+        assert!(rep_diff.compatible);
+
+        // Mismatched tokenizer/vocab with dflash still reports Incompatible.
+        let bad_dflash = write_tok_model("llama", "inkling2", 128256, "dflash", 480_000_000);
+        let rep_bad_dflash = check_draft_compatibility(&inkling_main, &bad_dflash);
+        assert_eq!(rep_bad_dflash.level, DraftCompatibilityLevel::Incompatible);
+        assert!(!rep_bad_dflash.compatible);
 
         // Verify binary GGUF token array length extraction without loading strings
         let mut data = Vec::new();

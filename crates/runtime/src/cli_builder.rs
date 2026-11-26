@@ -297,29 +297,32 @@ fn build_llama_server_args_inner(config: &LoadConfig, endpoint: Option<(&str, u1
     }
 
     // Multi-Token Prediction (MTP) & Speculative Decoding
-    if config.mtp_enabled {
-        let spec_type = config
-            .mtp_spec_type
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("draft-mtp");
+    let spec_type_trimmed = config
+        .mtp_spec_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let has_draft_path = config
+        .draft_model_path
+        .as_deref()
+        .is_some_and(|p| !p.as_os_str().is_empty());
+    let emit_spec_type = if config.mtp_enabled {
+        Some(spec_type_trimmed.unwrap_or("draft-mtp"))
+    } else if has_draft_path
+        && spec_type_trimmed.is_some_and(bibulm_core::spec_type_uses_external_draft)
+    {
+        spec_type_trimmed
+    } else {
+        None
+    };
+    let emit_external_draft = config.uses_external_draft();
+
+    if let Some(spec_type) = emit_spec_type {
         args.push("--spec-type".to_string());
         args.push(spec_type.to_string());
-        if let Some(max) = config.draft_max {
-            args.push("--spec-draft-n-max".to_string());
-            args.push(max.to_string());
-        }
-        if let Some(min) = config.draft_min {
-            args.push("--spec-draft-n-min".to_string());
-            args.push(min.to_string());
-        }
-        if let Some(p_min) = config.draft_p_min {
-            args.push("--spec-draft-p-min".to_string());
-            args.push(p_min.to_string());
-        }
-    } else if let Some(draft) = &config.draft_model_path
-        && !draft.as_os_str().is_empty()
+    }
+    if emit_external_draft
+        && let Some(draft) = &config.draft_model_path
     {
         args.push("-md".to_string());
         args.push(draft.to_string_lossy().into_owned());
@@ -327,6 +330,8 @@ fn build_llama_server_args_inner(config: &LoadConfig, endpoint: Option<(&str, u1
             args.push("-ngld".to_string());
             args.push(ngld.to_string());
         }
+    }
+    if emit_spec_type.is_some() || emit_external_draft {
         if let Some(max) = config.draft_max {
             args.push("--spec-draft-n-max".to_string());
             args.push(max.to_string());
@@ -658,5 +663,48 @@ mod tests {
             build_llama_server_args(&cfg, "127.0.0.1", 51006),
             vec!["-m", "/models/m.gguf", "-c", "2048", "--host", "127.0.0.1", "--port", "51006"]
         );
+    }
+
+    #[test]
+    fn emits_spec_type_and_external_draft_together_for_dspark_and_dflash() {
+        // Case 1: mtp_enabled=true with draft-dspark and draft_model_path set -> both --spec-type and -md emitted
+        let mut cfg = LoadConfig::new("C:/models/inkling2.gguf");
+        cfg.mtp_enabled = true;
+        cfg.mtp_spec_type = Some("draft-dspark".into());
+        cfg.draft_model_path = Some("C:/models/dspark.gguf".into());
+        cfg.draft_gpu_layers = Some(99);
+        cfg.draft_max = Some(4);
+        let args = build_llama_server_args(&cfg, "127.0.0.1", 51007);
+        assert!(args.windows(2).any(|w| w == ["--spec-type", "draft-dspark"]));
+        assert!(args.windows(2).any(|w| w == ["-md", "C:/models/dspark.gguf"]));
+        assert!(args.windows(2).any(|w| w == ["-ngld", "99"]));
+        assert!(args.windows(2).any(|w| w == ["--spec-draft-n-max", "4"]));
+
+        // Case 2: mtp_enabled=false with draft-dflash and draft_model_path set -> both --spec-type and -md emitted
+        let mut cfg2 = LoadConfig::new("C:/models/inkling2.gguf");
+        cfg2.mtp_enabled = false;
+        cfg2.mtp_spec_type = Some("draft-dflash".into());
+        cfg2.draft_model_path = Some("C:/models/dflash.gguf".into());
+        let args2 = build_llama_server_args(&cfg2, "127.0.0.1", 51008);
+        assert!(args2.windows(2).any(|w| w == ["--spec-type", "draft-dflash"]));
+        assert!(args2.windows(2).any(|w| w == ["-md", "C:/models/dflash.gguf"]));
+
+        // Case 3: mtp_enabled=false with stale draft-mtp and draft_model_path -> only -md emitted
+        let mut cfg3 = LoadConfig::new("C:/models/main.gguf");
+        cfg3.mtp_enabled = false;
+        cfg3.mtp_spec_type = Some("draft-mtp".into());
+        cfg3.draft_model_path = Some("C:/models/draft.gguf".into());
+        let args3 = build_llama_server_args(&cfg3, "127.0.0.1", 51009);
+        assert!(!args3.iter().any(|a| a == "--spec-type"));
+        assert!(args3.windows(2).any(|w| w == ["-md", "C:/models/draft.gguf"]));
+
+        // Case 4: mtp_enabled=true with draft-mtp and stale draft_model_path -> only --spec-type emitted
+        let mut cfg4 = LoadConfig::new("C:/models/main.gguf");
+        cfg4.mtp_enabled = true;
+        cfg4.mtp_spec_type = Some("draft-mtp".into());
+        cfg4.draft_model_path = Some("C:/models/draft.gguf".into());
+        let args4 = build_llama_server_args(&cfg4, "127.0.0.1", 51010);
+        assert!(args4.windows(2).any(|w| w == ["--spec-type", "draft-mtp"]));
+        assert!(!args4.iter().any(|a| a == "-md"));
     }
 }

@@ -436,6 +436,45 @@ impl LoadConfig {
             sampling_defaults: None,
         }
     }
+
+    /// Returns `true` when native built-in MTP heads should be used (without an external `-md` draft file).
+    pub fn uses_native_mtp(&self) -> bool {
+        self.mtp_enabled && spec_type_is_native_mtp(self.mtp_spec_type.as_deref())
+    }
+
+    /// Returns `true` when an external draft GGUF model (`-md`) should be passed to `llama-server`.
+    pub fn uses_external_draft(&self) -> bool {
+        let has_draft_path = self
+            .draft_model_path
+            .as_deref()
+            .is_some_and(|p| !p.as_os_str().is_empty());
+        has_draft_path
+            && (!self.mtp_enabled
+                || self
+                    .mtp_spec_type
+                    .as_deref()
+                    .is_some_and(spec_type_uses_external_draft))
+    }
+}
+
+/// Returns `true` if a `--spec-type` value (including comma-separated stacked types like
+/// `draft-dspark,ngram-mod`) relies on an external draft GGUF model (`-md`).
+pub fn spec_type_uses_external_draft(spec_type: &str) -> bool {
+    spec_type.split(',').any(|tok| {
+        let t = tok.trim().to_ascii_lowercase();
+        t.starts_with("draft-") && t != "draft-mtp"
+    })
+}
+
+/// Returns `true` if an optional `--spec-type` value selects native built-in MTP heads (`draft-mtp` / `mtp`).
+pub fn spec_type_is_native_mtp(spec_type: Option<&str>) -> bool {
+    match spec_type.map(str::trim).filter(|s| !s.is_empty()) {
+        None => true,
+        Some(raw) => raw.split(',').any(|tok| {
+            let t = tok.trim().to_ascii_lowercase();
+            t == "draft-mtp" || t == "mtp"
+        }),
+    }
 }
 
 /// Applies configured [`SamplingParams`] onto an OpenAI-compatible JSON request object.
@@ -670,5 +709,33 @@ mod tests {
         assert_eq!(cfg.cache_type_k, Some(KvQuantType::Q8_0));
         assert_eq!(cfg.cache_type_v, Some(KvQuantType::Q8_0));
         assert_eq!(cfg.custom_cli_args, None);
+    }
+
+    #[test]
+    fn spec_type_classification_handles_native_mtp_and_external_draft() {
+        assert!(spec_type_uses_external_draft("draft-dspark"));
+        assert!(spec_type_uses_external_draft("draft-dflash"));
+        assert!(spec_type_uses_external_draft("draft-dspark,ngram-mod"));
+        assert!(!spec_type_uses_external_draft("draft-mtp"));
+        assert!(!spec_type_uses_external_draft("mtp"));
+        assert!(!spec_type_uses_external_draft("ngram-mod"));
+
+        assert!(spec_type_is_native_mtp(None));
+        assert!(spec_type_is_native_mtp(Some("draft-mtp")));
+        assert!(spec_type_is_native_mtp(Some("mtp")));
+        assert!(!spec_type_is_native_mtp(Some("draft-dspark")));
+
+        let mut cfg = LoadConfig::new("main.gguf");
+        cfg.mtp_enabled = true;
+        cfg.mtp_spec_type = Some("draft-dspark".into());
+        assert!(!cfg.uses_native_mtp());
+        assert!(!cfg.uses_external_draft());
+
+        cfg.draft_model_path = Some("dspark.gguf".into());
+        assert!(cfg.uses_external_draft());
+
+        cfg.mtp_spec_type = Some("draft-mtp".into());
+        assert!(cfg.uses_native_mtp());
+        assert!(!cfg.uses_external_draft());
     }
 }

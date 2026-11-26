@@ -271,7 +271,17 @@ export const BenchmarkView: React.FC<BenchmarkViewProps> = ({
                   ctx {activeModel.load_config.ctx_size} · fa={activeModel.load_config.flash_attention}
                   {activeModel.load_config.cache_type_k &&
                     ` · kv=${activeModel.load_config.cache_type_k}`}
-                  {activeModel.load_config.mtp_enabled && ' · mtp=on'}
+                  {activeModel.load_config.mtp_enabled
+                    ? ` · spec=${activeModel.load_config.mtp_spec_type ?? 'draft-mtp'}`
+                    : activeModel.load_config.draft_model_path
+                      ? ` · draft=${
+                          activeModel.load_config.mtp_spec_type &&
+                          activeModel.load_config.mtp_spec_type !== 'draft-mtp' &&
+                          activeModel.load_config.mtp_spec_type !== 'mtp'
+                            ? activeModel.load_config.mtp_spec_type
+                            : 'auto'
+                        }`
+                      : null}
                   {activeModel.load_config.mmproj_path &&
                     ` · vision=${activeModel.load_config.enable_vision ? 'on' : 'off'}`}
                 </span>

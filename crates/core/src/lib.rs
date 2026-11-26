@@ -34,6 +34,7 @@ pub use load_params::{
     CliFlagValue, FlashAttentionMode, KvQuantType, LoadConfig, ModelAliasRule, MoeOffloadMode,
     ReasoningConfig, ReasoningEffort, ReasoningFormat, RopeScalingType, SamplingParams,
     ServerConfig, SplitMode, TensorOverride, apply_sampling_to_openai_body,
+    spec_type_is_native_mtp, spec_type_uses_external_draft,
 };
 pub use placement::{
     BufferAllocation, MemoryComponentBreakdown, MemoryPlacementReport, PlacementStatus,

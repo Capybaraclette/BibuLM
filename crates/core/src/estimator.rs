@@ -254,7 +254,7 @@ pub fn estimate_kv_cache_bytes(meta: &GgufMetadata, config: &LoadConfig) -> f64 
     }
 
     // MTP draft context adds a small KV slice for the NextN prediction layers when active.
-    if config.mtp_enabled && meta.has_mtp {
+    if config.uses_native_mtp() && meta.has_mtp {
         let mtp_layers = meta
             .nextn_predict_layers
             .or_else(|| {
@@ -446,14 +446,14 @@ pub fn estimate_memory_usage_with_sizes(
         0.0
     };
 
-    let (mtp_vram_mib, mtp_ram_mib) = if config.mtp_enabled && mtp_available_mib > 0.0 {
+    let (mtp_vram_mib, mtp_ram_mib) = if config.uses_native_mtp() && mtp_available_mib > 0.0 {
         let with_scratch = mtp_available_mib + 48.0;
         if ngl > 0 {
             (with_scratch, 0.0)
         } else {
             (0.0, with_scratch)
         }
-    } else if !config.mtp_enabled
+    } else if config.uses_external_draft()
         && let Some(draft_path) = config
             .draft_model_path
             .as_deref()
@@ -706,8 +706,16 @@ pub fn auto_fit_moe_with_sizes(
     } else {
         0.0
     };
-    let mtp_mib = if config.mtp_enabled && meta.tensor_summary.total_mtp_bytes() > 0 {
+    let mtp_mib = if config.uses_native_mtp() && meta.tensor_summary.total_mtp_bytes() > 0 {
         meta.tensor_summary.total_mtp_bytes() as f64 / MIB + 48.0
+    } else if config.uses_external_draft()
+        && config.draft_gpu_layers.unwrap_or(99) > 0
+        && let Some(draft_path) = config
+            .draft_model_path
+            .as_deref()
+            .filter(|p| !p.as_os_str().is_empty())
+    {
+        fs::metadata(draft_path).map(|m| m.len()).unwrap_or(0) as f64 / MIB
     } else {
         0.0
     };
@@ -1020,5 +1028,34 @@ mod tests {
         cfg_u.flash_attention = FlashAttentionMode::Off;
         let mla_no_fa_bytes = estimate_kv_cache_bytes(&meta, &cfg_u);
         assert!(mla_fa_bytes * 20.0 < mla_no_fa_bytes);
+    }
+
+    #[test]
+    fn external_draft_with_dspark_spec_type_accounts_for_draft_vram() {
+        let meta = sample_moe_meta();
+        let mut cfg = LoadConfig::new("inkling2-mini.gguf");
+        cfg.mtp_enabled = true;
+        cfg.mtp_spec_type = Some("draft-dspark".into());
+        cfg.draft_model_path = Some("dspark-draft.gguf".into());
+
+        let ctx = LiveMemoryContext {
+            available_vram_mib: 24000.0,
+            available_ram_mib: 64000.0,
+            ..Default::default()
+        };
+        let est = estimate_memory_usage_with_sizes(
+            &meta,
+            &cfg,
+            ctx,
+            GuardrailLevel::Off,
+            None,
+            Some(512 * 1024 * 1024),
+        );
+        assert!(
+            (est.breakdown.mtp_vram_mib - 512.0).abs() < 0.01,
+            "expected ~512 MiB draft VRAM, got {}",
+            est.breakdown.mtp_vram_mib
+        );
+        assert_eq!(est.breakdown.mtp_ram_mib, 0.0);
     }
 }

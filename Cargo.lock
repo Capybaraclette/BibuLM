@@ -319,7 +319,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bibulm-app"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "anyhow",
  "bibulm-bench",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "bibulm-bench"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "bibulm-core",
  "bibulm-runtime",
@@ -365,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "bibulm-cli"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "anyhow",
  "bibulm-core",
@@ -385,7 +385,7 @@ dependencies = [
 
 [[package]]
 name = "bibulm-core"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -401,7 +401,7 @@ dependencies = [
 
 [[package]]
 name = "bibulm-hardware"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "nvml-wrapper",
  "serde",
@@ -411,7 +411,7 @@ dependencies = [
 
 [[package]]
 name = "bibulm-link"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "bibulm-core",
  "bibulm-models",
@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "bibulm-models"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "bibulm-core",
  "chrono",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "bibulm-runtime"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "bibulm-core",
  "chrono",
@@ -466,7 +466,7 @@ dependencies = [
 
 [[package]]
 name = "bibulm-server"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "axum",
  "bibulm-core",
