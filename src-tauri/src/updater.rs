@@ -316,29 +316,21 @@ fn emit_progress(
 }
 
 #[cfg(target_os = "windows")]
-fn spawn_windows_updater_and_relaunch(installer_path: &std::path::Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-
-    let current_pid = std::process::id();
-    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::new());
-    let default_nsis_exe = std::env::var_os("LOCALAPPDATA")
-        .map(|d| PathBuf::from(d).join("BibuLM").join("BibuLM.exe"))
-        .unwrap_or_default();
-
+fn build_windows_update_script(
+    current_pid: u32,
+    installer_path: &std::path::Path,
+    current_exe: &std::path::Path,
+    default_nsis_exe: &std::path::Path,
+) -> String {
     let is_msi = installer_path
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("msi"));
 
-    let script_path = installer_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join("apply-update.ps1");
-
     let esc = |p: &std::path::Path| p.to_string_lossy().replace('\'', "''");
     let installer_ps = esc(installer_path);
-    let current_exe_ps = esc(&current_exe);
-    let default_exe_ps = esc(&default_nsis_exe);
+    let current_exe_ps = esc(current_exe);
+    let default_exe_ps = esc(default_nsis_exe);
 
     let install_cmd = if is_msi {
         format!(
@@ -349,33 +341,53 @@ fn spawn_windows_updater_and_relaunch(installer_path: &std::path::Path) -> Resul
         format!("Start-Process -FilePath '{installer_ps}' -ArgumentList '/S' -Wait")
     };
 
-    let ps_script = format!(
-        r#"$ErrorActionPreference = 'SilentlyContinue'
-try {{
-    Wait-Process -Id {current_pid} -Timeout 15 -ErrorAction SilentlyContinue
-}} catch {{}}
-Start-Sleep -Milliseconds 600
-{install_cmd}
-try {{
-    Add-Type -Namespace BibuLMWin32 -Name ShellNotify -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll")] public static extern void SHChangeNotify(int wEventId, uint uFlags, System.IntPtr dwItem1, System.IntPtr dwItem2);'
-    [BibuLMWin32.ShellNotify]::SHChangeNotify(0x08000000, 0x0000, [System.IntPtr]::Zero, [System.IntPtr]::Zero)
-}} catch {{}}
-Start-Sleep -Milliseconds 500
-if ('{default_exe_ps}' -and (Test-Path '{default_exe_ps}')) {{
-    Start-Process -FilePath '{default_exe_ps}'
-}} elseif ('{current_exe_ps}' -and (Test-Path '{current_exe_ps}')) {{
-    Start-Process -FilePath '{current_exe_ps}'
-}}
-Remove-Item -Path '{installer_ps}' -Force -ErrorAction SilentlyContinue
-Remove-Item -Path $PSCommandPath -Force -ErrorAction SilentlyContinue
-"#
-    );
+    // Leading UTF-8 BOM ensures Windows PowerShell 5.1 decodes non-ASCII user paths correctly.
+    format!(
+        "\u{FEFF}$ErrorActionPreference = 'SilentlyContinue'\n\
+try {{\n\
+    Wait-Process -Id {current_pid} -Timeout 15 -ErrorAction SilentlyContinue\n\
+}} catch {{}}\n\
+Start-Sleep -Milliseconds 600\n\
+{install_cmd}\n\
+try {{\n\
+    Add-Type -Namespace BibuLMWin32 -Name ShellNotify -MemberDefinition '[System.Runtime.InteropServices.DllImport(\"shell32.dll\")] public static extern void SHChangeNotify(int wEventId, uint uFlags, System.IntPtr dwItem1, System.IntPtr dwItem2);'\n\
+    [BibuLMWin32.ShellNotify]::SHChangeNotify(0x08000000, 0x0000, [System.IntPtr]::Zero, [System.IntPtr]::Zero)\n\
+}} catch {{}}\n\
+Start-Sleep -Milliseconds 500\n\
+if ('{current_exe_ps}' -and (Test-Path '{current_exe_ps}')) {{\n\
+    Start-Process -FilePath '{current_exe_ps}'\n\
+}} elseif ('{default_exe_ps}' -and (Test-Path '{default_exe_ps}')) {{\n\
+    Start-Process -FilePath '{default_exe_ps}'\n\
+}}\n\
+Remove-Item -Path '{installer_ps}' -Force -ErrorAction SilentlyContinue\n\
+Remove-Item -Path $PSCommandPath -Force -ErrorAction SilentlyContinue\n"
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_windows_updater_and_relaunch(installer_path: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+
+    let current_pid = std::process::id();
+    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::new());
+    let default_nsis_exe = std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join("BibuLM").join("bibulm-app.exe"))
+        .unwrap_or_default();
+
+    let script_path = installer_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("apply-update.ps1");
+
+    let ps_script =
+        build_windows_update_script(current_pid, installer_path, &current_exe, &default_nsis_exe);
 
     std::fs::write(&script_path, ps_script)
         .map_err(|e| format!("Failed writing update helper script: {e}"))?;
 
+    // Do NOT combine DETACHED_PROCESS with CREATE_NO_WINDOW: powershell.exe exits with 0 without running -File.
     const CREATE_NO_WINDOW: u32 = 0x08000000;
-    const DETACHED_PROCESS: u32 = 0x00000008;
 
     std::process::Command::new("powershell.exe")
         .args([
@@ -388,7 +400,10 @@ Remove-Item -Path $PSCommandPath -Force -ErrorAction SilentlyContinue
             "-File",
         ])
         .arg(&script_path)
-        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|e| format!("Failed to launch update installer helper: {e}"))?;
 
@@ -643,5 +658,22 @@ mod tests {
         );
         assert!(verify_required_sha256(None, &"a".repeat(64), "x.exe").is_err());
         assert!(verify_required_sha256(Some(&"a".repeat(64)), &"a".repeat(64), "x.exe").is_ok());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_update_script_prefers_current_exe_and_escapes_quotes() {
+        let script = build_windows_update_script(
+            4242,
+            std::path::Path::new(r"C:\Users\O'Neil\updates\BibuLM_1.0.3_x64-setup.exe"),
+            std::path::Path::new(r"C:\Program Files\BibuLM\bibulm-app.exe"),
+            std::path::Path::new(r"C:\Users\O'Neil\AppData\Local\BibuLM\bibulm-app.exe"),
+        );
+        assert!(script.starts_with('\u{FEFF}'));
+        assert!(script.contains("Wait-Process -Id 4242"));
+        assert!(script.contains(r"C:\Users\O''Neil\updates\BibuLM_1.0.3_x64-setup.exe"));
+        let cur_pos = script.find(r"C:\Program Files\BibuLM\bibulm-app.exe").unwrap();
+        let def_pos = script.find(r"C:\Users\O''Neil\AppData\Local\BibuLM\bibulm-app.exe").unwrap();
+        assert!(cur_pos < def_pos);
     }
 }
