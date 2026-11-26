@@ -495,6 +495,7 @@ pub fn run() {
             commands::compute_auto_fit_moe,
             commands::compute_auto_fit_moe_with_context,
             commands::preview_llama_cli,
+            commands::format_llama_cli_args,
             commands::delete_local_model_files,
             commands::reveal_in_explorer,
             commands::search_hf_models,

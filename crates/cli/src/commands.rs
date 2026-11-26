@@ -543,12 +543,18 @@ pub async fn cmd_runtime(node: &HeadlessNode, cmd: RuntimeCmd, json_out: bool) -
             .await
             .map_err(|e| anyhow!(e.to_string()))?;
             eprintln!();
-            let mut s = node.settings.write().await;
-            if s.active_runtime_id.is_none() {
+            let keep_old = {
+                let mut s = node.settings.write().await;
                 s.active_runtime_id = Some(rec.id.clone());
                 save_settings(node, &s).await?;
+                s.old_runtimes_to_keep
+            };
+            let removed = bibulm_runtime::prune_old_runtimes(&node.db, &rec, keep_old, &[])
+                .map_err(|e| anyhow!(e.to_string()))?;
+            for old_id in &removed {
+                println!("Removed old runtime '{old_id}'.");
             }
-            println!("Installed runtime '{}' at {}", rec.id, rec.install_dir);
+            println!("Installed runtime '{}' (active) at {}", rec.id, rec.install_dir);
         }
         RuntimeCmd::Use(id) => {
             let list = node.db.list_runtimes().map_err(|e| anyhow!(e.to_string()))?;

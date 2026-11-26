@@ -362,6 +362,9 @@ pub struct LoadConfig {
     #[serde(default)]
     pub cli_flags: BTreeMap<String, CliFlagValue>,
     pub extra_args: Vec<String>,
+    /// Optional raw `llama-server` CLI arguments replacing auto-generated flags (except managed `--host` / `--port`).
+    #[serde(default)]
+    pub custom_cli_args: Option<String>,
 
     // Optional per-model sampling defaults
     pub sampling_defaults: Option<SamplingParams>,
@@ -402,8 +405,8 @@ impl LoadConfig {
             tensor_split: None,
             offload_kv_cache: true,
             flash_attention: FlashAttentionMode::Auto,
-            cache_type_k: None,
-            cache_type_v: None,
+            cache_type_k: Some(KvQuantType::Q8_0),
+            cache_type_v: Some(KvQuantType::Q8_0),
             use_mmap: true,
             use_mlock: false,
             direct_io: false,
@@ -429,6 +432,7 @@ impl LoadConfig {
             embeddings: false,
             cli_flags: BTreeMap::new(),
             extra_args: Vec::new(),
+            custom_cli_args: None,
             sampling_defaults: None,
         }
     }
@@ -658,5 +662,13 @@ mod tests {
             enabled: false,
         };
         assert!(!disabled.matches("anything"));
+    }
+
+    #[test]
+    fn load_config_defaults_to_q8_kv_cache_and_no_custom_cli() {
+        let cfg = LoadConfig::default();
+        assert_eq!(cfg.cache_type_k, Some(KvQuantType::Q8_0));
+        assert_eq!(cfg.cache_type_v, Some(KvQuantType::Q8_0));
+        assert_eq!(cfg.custom_cli_args, None);
     }
 }

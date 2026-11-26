@@ -9,7 +9,10 @@ pub mod placement_parser;
 pub mod supervisor;
 pub mod telemetry;
 
-pub use cli_builder::{build_llama_server_args, format_cli_preview, split_extra_args};
+pub use cli_builder::{
+    build_editable_llama_args, build_llama_server_args, format_cli_args, format_cli_preview,
+    split_extra_args,
+};
 pub use github::{
     GitHubError, HardwareMatchContext, LlamaRelease, ReleaseAssetInfo, RuntimeBackendVariant,
     TargetPlatform, categorize_platform_assets, categorize_win_x64_assets,
@@ -17,8 +20,8 @@ pub use github::{
 };
 pub use help_parser::{DiscoveredCliFlag, discover_runtime_cli_flags, parse_llama_help_output};
 pub use installer::{
-    InstallProgress, InstallerError, install_runtime_variant, register_custom_runtime,
-    resolve_bench_exe, uninstall_runtime,
+    InstallProgress, InstallerError, install_runtime_variant, prune_old_runtimes,
+    register_custom_runtime, resolve_bench_exe, runtime_family, uninstall_runtime,
 };
 pub use placement_parser::{parse_placement_line, parse_placement_logs};
 pub use supervisor::{LoadedModelInfo, ModelSupervisor, ServerLogEntry, SupervisorError};

@@ -8,7 +8,8 @@ use bibulm_models::DownloadJobState;
 use bibulm_runtime::{
     DiscoveredCliFlag, LlamaRelease, LlamaServerMetrics, LoadedModelInfo,
     RuntimeBackendVariant, ServerLogEntry, discover_runtime_cli_flags, fetch_llama_cpp_releases,
-    fetch_llama_server_metrics, install_runtime_variant, register_custom_runtime, uninstall_runtime,
+    fetch_llama_server_metrics, install_runtime_variant, prune_old_runtimes,
+    register_custom_runtime, uninstall_runtime,
 };
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, State};
@@ -64,12 +65,20 @@ pub async fn install_runtime(
     state.downloads.record_external_job(base_job.finished(outcome)).await;
     let rec = res.map_err(|e| e.to_string())?;
 
-    // Automatically select as active runtime if none is set yet
-    let mut s = state.settings.write().await;
-    if s.active_runtime_id.is_none() {
+    let in_use: Vec<String> = state
+        .supervisor
+        .list_loaded()
+        .await
+        .into_iter()
+        .map(|m| m.runtime_id)
+        .collect();
+    let keep_old = {
+        let mut s = state.settings.write().await;
         s.active_runtime_id = Some(rec.id.clone());
         let _ = state.db.save_settings(&s);
-    }
+        s.old_runtimes_to_keep
+    };
+    let _ = prune_old_runtimes(&state.db, &rec, keep_old, &in_use);
     Ok(rec)
 }
 
@@ -82,10 +91,8 @@ pub async fn register_custom_runtime_cmd(
     let rec = register_custom_runtime(&state.db, display_name, &PathBuf::from(path))
         .map_err(|e| e.to_string())?;
     let mut s = state.settings.write().await;
-    if s.active_runtime_id.is_none() {
-        s.active_runtime_id = Some(rec.id.clone());
-        let _ = state.db.save_settings(&s);
-    }
+    s.active_runtime_id = Some(rec.id.clone());
+    let _ = state.db.save_settings(&s);
     Ok(rec)
 }
 

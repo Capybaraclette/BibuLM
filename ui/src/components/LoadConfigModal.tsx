@@ -9,6 +9,8 @@ import {
   EyeOff,
   FolderOpen,
   Link2,
+  Pencil,
+  RotateCcw,
   Terminal,
 } from 'lucide-react';
 import type {
@@ -938,34 +940,93 @@ export const LoadConfigModal: React.FC<LoadConfigModalProps> = ({
             </div>
           )}
 
-          {/* Live CLI Command Preview */}
-          <div className="rounded-xl bg-[var(--bg-terminal)] border border-[var(--border-hairline)] p-3 space-y-1.5">
-            <div className="flex items-center justify-between">
+          {/* Live CLI Command Preview / Manual CLI Override */}
+          <div className="rounded-xl bg-[var(--bg-terminal)] border border-[var(--border-hairline)] p-3 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-1.5 text-[11px] font-medium text-[#a1a1a6]">
                 <Terminal className="w-3.5 h-3.5 text-[#409cff]" />
-                <span>Generated llama-server Command Preview</span>
-              </div>
-              <button
-                type="button"
-                onClick={copyCli}
-                className="inline-flex items-center gap-1 text-[11px] text-[#a1a1a6] hover:text-white cursor-pointer"
-              >
-                {copiedCli ? (
-                  <>
-                    <Check className="w-3 h-3 text-[#30d158]" />
-                    <span className="text-[#30d158]">Copied</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-3 h-3" />
-                    <span>Copy CLI</span>
-                  </>
+                <span>
+                  {config.custom_cli_args != null
+                    ? 'Manual llama-server Launch Arguments'
+                    : 'Generated llama-server Command Preview'}
+                </span>
+                {config.custom_cli_args != null && (
+                  <span className="apple-badge apple-badge-amber text-[10px] py-0 px-1.5">
+                    Manual Override
+                  </span>
                 )}
-              </button>
+              </div>
+              <div className="flex items-center gap-3">
+                {!remoteTarget &&
+                  (config.custom_cli_args != null ? (
+                    <button
+                      type="button"
+                      onClick={() => patch({ custom_cli_args: null })}
+                      className="inline-flex items-center gap-1 text-[11px] text-[#ff9f0a] hover:text-white cursor-pointer"
+                      title="Discard manual edits and return to auto-generated arguments"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Reset to auto</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const rawArgs = await api.formatLlamaCliArgs(config);
+                          patch({ custom_cli_args: rawArgs });
+                        } catch {
+                          patch({ custom_cli_args: '' });
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 text-[11px] text-[#409cff] hover:text-white cursor-pointer"
+                      title="Manually edit all llama-server CLI arguments for this model"
+                    >
+                      <Pencil className="w-3 h-3" />
+                      <span>Edit manually</span>
+                    </button>
+                  ))}
+                <button
+                  type="button"
+                  onClick={copyCli}
+                  className="inline-flex items-center gap-1 text-[11px] text-[#a1a1a6] hover:text-white cursor-pointer"
+                >
+                  {copiedCli ? (
+                    <>
+                      <Check className="w-3 h-3 text-[#30d158]" />
+                      <span className="text-[#30d158]">Copied</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      <span>Copy CLI</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
-            <pre className="text-[11px] font-mono text-[#e5e5ea] whitespace-pre-wrap break-all max-h-24 overflow-y-auto">
-              {cliPreview}
-            </pre>
+            {config.custom_cli_args != null ? (
+              <div className="space-y-1.5">
+                <textarea
+                  value={config.custom_cli_args}
+                  onChange={(e) => patch({ custom_cli_args: e.target.value })}
+                  rows={4}
+                  spellCheck={false}
+                  placeholder="-m path/to/model.gguf -c 16384 -ngl 999 -ctk q8_0 -ctv q8_0 --metrics"
+                  className="w-full rounded-lg bg-black/30 border border-white/15 px-2.5 py-2 text-[11px] font-mono text-[#e5e5ea] placeholder-[#636366] focus:outline-none focus:border-[#0a84ff] resize-y"
+                  aria-label="Manual llama-server launch arguments"
+                />
+                <div className="text-[10px] text-[#8e8e93]">
+                  Manual arguments override the generated flags above (
+                  <code className="text-[#a1a1a6]">--host</code> and{' '}
+                  <code className="text-[#a1a1a6]">--port</code> remain managed by BibuLM).
+                </div>
+              </div>
+            ) : (
+              <pre className="text-[11px] font-mono text-[#e5e5ea] whitespace-pre-wrap break-all max-h-24 overflow-y-auto">
+                {cliPreview}
+              </pre>
+            )}
           </div>
         </div>
 

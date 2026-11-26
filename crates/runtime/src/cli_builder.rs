@@ -8,6 +8,57 @@ use std::path::Path;
 /// The returned argument list is suitable both for spawning `llama-server.exe` directly
 /// and for rendering a live CLI preview in the UI.
 pub fn build_llama_server_args(config: &LoadConfig, host: &str, port: u16) -> Vec<String> {
+    build_llama_server_args_inner(config, Some((host, port)))
+}
+
+/// Builds the editable `llama-server` CLI arguments for a [`LoadConfig`] without managed `--host`/`--port`.
+pub fn build_editable_llama_args(config: &LoadConfig) -> Vec<String> {
+    build_llama_server_args_inner(config, None)
+}
+
+fn build_custom_args(raw: &str, endpoint: Option<(&str, u16)>) -> Vec<String> {
+    let parsed = split_extra_args(raw);
+    let mut args = Vec::with_capacity(parsed.len() + 4);
+    let mut iter = parsed.into_iter().peekable();
+
+    // If the user pasted a full command preview starting with `llama-server(.exe)`, drop the exe token.
+    if let Some(first) = iter.peek()
+        && !first.starts_with('-')
+        && Path::new(first)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| {
+                n.eq_ignore_ascii_case("llama-server") || n.eq_ignore_ascii_case("llama-server.exe")
+            })
+    {
+        iter.next();
+    }
+
+    while let Some(tok) = iter.next() {
+        if endpoint.is_some() && (tok == "--host" || tok == "--port") {
+            let _ = iter.next();
+            continue;
+        }
+        if endpoint.is_some() && (tok.starts_with("--host=") || tok.starts_with("--port=")) {
+            continue;
+        }
+        args.push(tok);
+    }
+
+    if let Some((host, port)) = endpoint {
+        args.push("--host".to_string());
+        args.push(host.to_string());
+        args.push("--port".to_string());
+        args.push(port.to_string());
+    }
+    args
+}
+
+fn build_llama_server_args_inner(config: &LoadConfig, endpoint: Option<(&str, u16)>) -> Vec<String> {
+    if let Some(raw) = &config.custom_cli_args {
+        return build_custom_args(raw, endpoint);
+    }
+
     let mut args = Vec::new();
 
     args.push("-m".to_string());
@@ -20,10 +71,12 @@ pub fn build_llama_server_args(config: &LoadConfig, host: &str, port: u16) -> Ve
         args.push(alias.clone());
     }
 
-    args.push("--host".to_string());
-    args.push(host.to_string());
-    args.push("--port".to_string());
-    args.push(port.to_string());
+    if let Some((host, port)) = endpoint {
+        args.push("--host".to_string());
+        args.push(host.to_string());
+        args.push("--port".to_string());
+        args.push(port.to_string());
+    }
 
     if config.enable_vision
         && let Some(mmproj) = &config.mmproj_path
@@ -389,6 +442,14 @@ pub fn split_extra_args(input: &str) -> Vec<String> {
     out
 }
 
+/// Formats `args` as a shell-escaped command-line argument string (without the executable).
+pub fn format_cli_args(args: &[String]) -> String {
+    args.iter()
+        .map(|a| quote_arg(a))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Formats a shell-copyable CLI preview string for display in the Load Config modal.
 pub fn format_cli_preview(server_exe: Option<&Path>, args: &[String]) -> String {
     let exe = server_exe
@@ -407,7 +468,12 @@ fn quote_arg(a: &str) -> String {
         || a.chars()
             .any(|c| c.is_whitespace() || c == '"' || c == '{' || c == '}' || c == '\\')
     {
-        format!("\"{}\"", a.replace('"', "\\\""))
+        // `split_extra_args` treats single-quoted segments literally, preserving UNC `\\` or trailing `\`.
+        if (a.contains("\\\\") || a.ends_with('\\')) && !a.contains('\'') {
+            format!("'{a}'")
+        } else {
+            format!("\"{}\"", a.replace('"', "\\\""))
+        }
     } else {
         a.to_string()
     }
@@ -550,5 +616,41 @@ mod tests {
         );
         assert!(args.windows(2).any(|w| w == ["--logit-bias", "15043+1"]));
         assert!(args.windows(2).any(|w| w == ["--logit-bias", "1234-2"]));
+    }
+
+    #[test]
+    fn custom_cli_args_override_generated_flags_and_manage_endpoint() {
+        let mut cfg = LoadConfig::new(r"\\nas\models\my model.gguf");
+        cfg.ctx_size = 32768;
+
+        let editable = format_cli_args(&build_editable_llama_args(&cfg));
+        assert!(!editable.contains("--host"));
+        assert!(!editable.contains("--port"));
+        assert!(editable.contains("-ctk q8_0"));
+        assert!(editable.contains("-ctv q8_0"));
+        assert_eq!(
+            split_extra_args(&editable),
+            build_editable_llama_args(&cfg),
+            "editable args should round-trip losslessly"
+        );
+
+        cfg.custom_cli_args = Some(
+            r#""C:\llama\llama-server.exe" -m "C:\m.gguf" --host 0.0.0.0 --port=9999 -c 4096 --no-warmup"#.into(),
+        );
+        let args = build_llama_server_args(&cfg, "127.0.0.1", 51005);
+        assert_eq!(
+            args,
+            vec![
+                "-m",
+                r"C:\m.gguf",
+                "-c",
+                "4096",
+                "--no-warmup",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "51005",
+            ]
+        );
     }
 }

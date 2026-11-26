@@ -156,6 +156,7 @@ export interface LoadConfig {
   embeddings: boolean;
   cli_flags: Record<string, CliFlagValue>;
   extra_args: string[];
+  custom_cli_args: string | null;
   sampling_defaults: SamplingParams | null;
 }
 
@@ -348,6 +349,7 @@ export interface AppSettings {
   minimize_to_tray: boolean;
   start_minimized: boolean;
   auto_check_runtime_updates: boolean;
+  old_runtimes_to_keep: number;
   auto_check_app_updates: boolean;
   log_retention_days: number;
   guardrail_level: GuardrailLevel;

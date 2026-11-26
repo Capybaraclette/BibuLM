@@ -599,15 +599,16 @@ impl GatewayContext {
         }
 
         // Security: never allow arbitrary raw CLI args or unsafe flags from remote Link peers.
-        if !load_cfg.extra_args.is_empty() {
+        if !load_cfg.extra_args.is_empty() || load_cfg.custom_cli_args.is_some() {
             self.supervisor
                 .push_log(
                     "WARN",
                     "LINK",
-                    "Stripped raw extra_args from remote Link load request.",
+                    "Stripped raw CLI args from remote Link load request.",
                 )
                 .await;
             load_cfg.extra_args.clear();
+            load_cfg.custom_cli_args = None;
         }
         let mut stripped_flags = Vec::new();
         load_cfg.cli_flags.retain(|flag, _| {

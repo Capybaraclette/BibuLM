@@ -35,11 +35,11 @@ interface RuntimeViewProps {
   linkPeers: RemotePeer[];
   selectedPeerId: string | null;
   onSelectPeerId: (id: string | null) => void;
-  onRefreshInstalled: () => void;
+  onRefreshInstalled: () => Promise<void> | void;
   onRefreshPeers: () => void;
   onOpenPeerDownloads: (peerId: string) => void;
   onSaveSettings: (next: AppSettings) => void;
-  onSetActiveRuntime: (id: string) => void;
+  onSetActiveRuntime: (id: string) => Promise<void> | void;
 }
 
 function formatPlatformLabel(raw?: string | null): string {
@@ -160,7 +160,12 @@ export const RuntimeView: React.FC<RuntimeViewProps> = ({
         .then(setRemoteData)
         .catch(() => {});
     }
-  }, [selectedPeer?.node_id, selectedPeer?.allow_remote_manage, selectedPeer?.runtimes_count]);
+  }, [
+    selectedPeer?.node_id,
+    selectedPeer?.allow_remote_manage,
+    selectedPeer?.runtimes_count,
+    selectedPeer?.active_runtime_tag,
+  ]);
 
   const effectiveInstalled = selectedPeer ? (remoteData?.installed ?? []) : installed;
   const effectiveActiveId = selectedPeer
@@ -195,9 +200,7 @@ export const RuntimeView: React.FC<RuntimeViewProps> = ({
       } else {
         const rec = await api.installRuntime(variant, selectedRelease?.release_notes ?? null);
         await onRefreshInstalled();
-        if (!settings.active_runtime_id) {
-          onSetActiveRuntime(rec.id);
-        }
+        await onSetActiveRuntime(rec.id);
       }
     } catch (e) {
       setInstallError(String(e));
@@ -247,8 +250,9 @@ export const RuntimeView: React.FC<RuntimeViewProps> = ({
     });
     if (typeof selected === 'string') {
       try {
-        await api.registerCustomRuntime('Custom llama.cpp', selected);
-        onRefreshInstalled();
+        const rec = await api.registerCustomRuntime('Custom llama.cpp', selected);
+        await onRefreshInstalled();
+        await onSetActiveRuntime(rec.id);
       } catch (e) {
         setInstallError(String(e));
       }
@@ -405,22 +409,48 @@ export const RuntimeView: React.FC<RuntimeViewProps> = ({
                 </div>
 
                 {!isRemote && (
-                  <div className="p-4 flex items-center justify-between">
-                    <div>
-                      <div className="font-medium text-[var(--label-primary)]">
-                        Check for new llama.cpp releases on launch
+                  <>
+                    <div className="p-4 flex items-center justify-between gap-3">
+                      <div>
+                        <div className="font-medium text-[var(--label-primary)]">
+                          Check for new llama.cpp releases on launch
+                        </div>
+                        <div className="text-[11px] text-[var(--label-secondary)]">
+                          Queries GitHub Releases directly from ggml-org/llama.cpp
+                        </div>
                       </div>
-                      <div className="text-[11px] text-[var(--label-secondary)]">
-                        Queries GitHub Releases directly from ggml-org/llama.cpp
-                      </div>
+                      <Toggle
+                        checked={settings.auto_check_runtime_updates}
+                        onChange={(v) =>
+                          onSaveSettings({ ...settings, auto_check_runtime_updates: v })
+                        }
+                      />
                     </div>
-                    <Toggle
-                      checked={settings.auto_check_runtime_updates}
-                      onChange={(v) =>
-                        onSaveSettings({ ...settings, auto_check_runtime_updates: v })
-                      }
-                    />
-                  </div>
+
+                    <div className="p-4 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="font-medium text-[var(--label-primary)]">
+                          Old builds to keep per runtime
+                        </div>
+                        <div className="text-[11px] text-[var(--label-secondary)]">
+                          Removes older builds of the same backend (e.g. CUDA, Vulkan, CPU) when
+                          installing a new one. Default 0 keeps only the latest.
+                        </div>
+                      </div>
+                      <input
+                        type="number"
+                        min={0}
+                        value={settings.old_runtimes_to_keep ?? 0}
+                        onChange={(e) => {
+                          const parsed = parseInt(e.target.value, 10);
+                          const next = Number.isNaN(parsed) ? 0 : Math.max(0, parsed);
+                          onSaveSettings({ ...settings, old_runtimes_to_keep: next });
+                        }}
+                        className="w-20 bibulm-input h-7 text-right font-mono tabular-nums"
+                        aria-label="Old builds to keep per runtime"
+                      />
+                    </div>
+                  </>
                 )}
               </div>
 

@@ -120,6 +120,7 @@ export const api = {
       mmprojSizeBytes: mmprojSizeBytes ?? null,
     }),
   previewLlamaCli: (config: LoadConfig) => invoke<string>('preview_llama_cli', { config }),
+  formatLlamaCliArgs: (config: LoadConfig) => invoke<string>('format_llama_cli_args', { config }),
   deleteLocalModelFiles: (path: string) => invoke<number>('delete_local_model_files', { path }),
   revealInExplorer: (path: string) => invoke<void>('reveal_in_explorer', { path }),
 
@@ -424,8 +425,8 @@ export function defaultLoadConfigForModel(
     tensor_split: null,
     offload_kv_cache: settings?.default_offload_kv_cache ?? true,
     flash_attention: 'on',
-    cache_type_k: null,
-    cache_type_v: null,
+    cache_type_k: 'q8_0',
+    cache_type_v: 'q8_0',
     use_mmap: true,
     use_mlock: false,
     direct_io: false,
@@ -457,6 +458,7 @@ export function defaultLoadConfigForModel(
     embeddings: model.is_embedding,
     cli_flags: {},
     extra_args: [],
+    custom_cli_args: null,
     sampling_defaults: null,
   };
 }

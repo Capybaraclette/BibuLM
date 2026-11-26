@@ -468,6 +468,7 @@ impl Database {
                install_dir = excluded.install_dir,
                server_exe = excluded.server_exe,
                bench_exe = excluded.bench_exe,
+               installed_at = excluded.installed_at,
                release_notes = excluded.release_notes,
                size_bytes = excluded.size_bytes",
             params![
@@ -720,6 +721,18 @@ mod tests {
         settings.server.port = 8089;
         db.save_settings(&settings).unwrap();
         assert_eq!(db.load_settings().unwrap().server.port, 8089);
+
+        // Legacy settings JSON without newer fields deserializes with defaults.
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO kv_settings (key, value_json, updated_at) VALUES ('app_settings', '{}', '2026-01-01T00:00:00Z')
+                 ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+                [],
+            )
+            .unwrap();
+        }
+        assert_eq!(db.load_settings().unwrap().old_runtimes_to_keep, 0);
 
         let mut cfg = LoadConfig::new("C:/models/test.gguf");
         cfg.moe_offload = MoeOffloadMode::FirstNLayersExpertsCpu(12);

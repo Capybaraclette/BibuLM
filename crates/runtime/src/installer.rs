@@ -250,6 +250,59 @@ pub fn resolve_bench_exe(rec: &InstalledRuntimeRecord) -> Option<PathBuf> {
     None
 }
 
+/// Normalizes a runtime backend identifier to its runtime family so versioned backends
+/// (e.g. `cuda-12.4` and `cuda-13.1`, or `cpu-avx2` and `cpu`) count as the same runtime.
+pub fn runtime_family(backend: &str) -> &str {
+    let b = backend.trim();
+    if b.eq_ignore_ascii_case("cuda")
+        || b.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("cuda-"))
+    {
+        "cuda"
+    } else if b.eq_ignore_ascii_case("cpu")
+        || b.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("cpu-"))
+    {
+        "cpu"
+    } else {
+        b
+    }
+}
+
+/// Removes older managed runtimes in the same runtime family as `installed`, keeping at most
+/// `keep_old` previous builds alongside `installed` (and never removing runtimes in `in_use_ids`).
+/// Returns the IDs of removed runtimes.
+pub fn prune_old_runtimes(
+    db: &Database,
+    installed: &InstalledRuntimeRecord,
+    keep_old: u32,
+    in_use_ids: &[String],
+) -> Result<Vec<String>, InstallerError> {
+    if installed.is_custom {
+        return Ok(Vec::new());
+    }
+    let target_family = runtime_family(&installed.backend);
+    // `list_runtimes()` is ordered newest-first (`installed_at DESC`).
+    let mut kept_old = 0usize;
+    let mut removed = Vec::new();
+    for rt in db.list_runtimes()? {
+        if rt.id == installed.id || rt.is_custom {
+            continue;
+        }
+        if !runtime_family(&rt.backend).eq_ignore_ascii_case(target_family) {
+            continue;
+        }
+        if kept_old < keep_old as usize {
+            kept_old += 1;
+            continue;
+        }
+        if in_use_ids.iter().any(|id| id == &rt.id) {
+            continue;
+        }
+        uninstall_runtime(db, &rt.id)?;
+        removed.push(rt.id);
+    }
+    Ok(removed)
+}
+
 /// Removes a runtime from the database, deleting its managed folder if not a custom binary.
 pub fn uninstall_runtime(db: &Database, id: &str) -> Result<(), InstallerError> {
     let runtimes = db.list_runtimes()?;
@@ -482,6 +535,80 @@ mod tests {
         fs::create_dir_all(&zip_dest).unwrap();
         extract_archive_safely(&zip_path, &zip_dest).unwrap();
         assert!(find_executable(&zip_dest, &["llama-bench.exe"]).is_some());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    fn make_record(id: &str, backend: &str, dir: &Path, installed_at: &str, is_custom: bool) -> InstalledRuntimeRecord {
+        if !is_custom {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join("llama-server.exe"), b"stub").unwrap();
+        }
+        InstalledRuntimeRecord {
+            id: id.to_string(),
+            tag: id.split('-').next().unwrap_or("b0").to_string(),
+            backend: backend.to_string(),
+            display_name: id.to_string(),
+            install_dir: dir.to_string_lossy().into_owned(),
+            server_exe: dir.join("llama-server.exe").to_string_lossy().into_owned(),
+            bench_exe: None,
+            is_custom,
+            installed_at: installed_at.to_string(),
+            release_notes: None,
+            size_bytes: 4,
+        }
+    }
+
+    #[test]
+    fn runtime_family_groups_versioned_backends() {
+        assert_eq!(runtime_family("cuda-12.4"), "cuda");
+        assert_eq!(runtime_family("cuda-13.1"), "cuda");
+        assert_eq!(runtime_family("cuda"), "cuda");
+        assert_eq!(runtime_family("cpu"), "cpu");
+        assert_eq!(runtime_family("cpu-avx2"), "cpu");
+        assert_eq!(runtime_family("cpu-avx512"), "cpu");
+        assert_eq!(runtime_family("vulkan"), "vulkan");
+        assert_eq!(runtime_family("rocm"), "rocm");
+    }
+
+    #[test]
+    fn prune_old_runtimes_respects_keep_count_family_and_in_use() {
+        let tmp = std::env::temp_dir().join(format!("bibulm_prune_{}", Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        let db = Database::open_in_memory().unwrap();
+
+        let cuda_1 = make_record("b5100-cuda-12.4", "cuda-12.4", &tmp.join("b5100-cuda-12.4"), "2026-01-01T00:00:00Z", false);
+        let cuda_2 = make_record("b5200-cuda-12.4", "cuda-12.4", &tmp.join("b5200-cuda-12.4"), "2026-01-02T00:00:00Z", false);
+        let cuda_3 = make_record("b5300-cuda-13.1", "cuda-13.1", &tmp.join("b5300-cuda-13.1"), "2026-01-03T00:00:00Z", false);
+        let vulkan = make_record("b5100-vulkan", "vulkan", &tmp.join("b5100-vulkan"), "2026-01-01T00:00:00Z", false);
+        let custom = make_record("custom-1", "custom", &tmp.join("custom-1"), "2026-01-01T00:00:00Z", true);
+
+        for r in [&cuda_1, &cuda_2, &cuda_3, &vulkan, &custom] {
+            db.upsert_runtime(r).unwrap();
+        }
+
+        // keep_old = 1 keeps b5200-cuda-12.4 and removes b5100-cuda-12.4; leaves vulkan and custom intact.
+        let removed = prune_old_runtimes(&db, &cuda_3, 1, &[]).unwrap();
+        assert_eq!(removed, vec!["b5100-cuda-12.4"]);
+        assert!(!tmp.join("b5100-cuda-12.4").exists());
+        assert!(tmp.join("b5200-cuda-12.4").exists());
+        assert!(tmp.join("b5300-cuda-13.1").exists());
+        assert!(tmp.join("b5100-vulkan").exists());
+
+        // keep_old = 0 skips in-use build, then removes it once no longer in use.
+        let removed_protected = prune_old_runtimes(&db, &cuda_3, 0, &["b5200-cuda-12.4".to_string()]).unwrap();
+        assert!(removed_protected.is_empty());
+        assert!(tmp.join("b5200-cuda-12.4").exists());
+
+        let removed_all_old = prune_old_runtimes(&db, &cuda_3, 0, &[]).unwrap();
+        assert_eq!(removed_all_old, vec!["b5200-cuda-12.4"]);
+        assert!(!tmp.join("b5200-cuda-12.4").exists());
+
+        let remaining: Vec<String> = db.list_runtimes().unwrap().into_iter().map(|r| r.id).collect();
+        assert!(remaining.contains(&"b5300-cuda-13.1".to_string()));
+        assert!(remaining.contains(&"b5100-vulkan".to_string()));
+        assert!(remaining.contains(&"custom-1".to_string()));
+        assert_eq!(remaining.len(), 3);
 
         let _ = fs::remove_dir_all(&tmp);
     }

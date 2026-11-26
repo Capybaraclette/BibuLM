@@ -918,12 +918,26 @@ async fn link_install_runtime_handler(
         downloads.record_external_job(base_job.finished(outcome)).await;
         match res {
             Ok(rec) => {
-                {
+                let in_use: Vec<String> = task_ctx
+                    .supervisor
+                    .list_loaded()
+                    .await
+                    .into_iter()
+                    .map(|m| m.runtime_id)
+                    .collect();
+                let keep_old = {
                     let mut s = task_ctx.settings.write().await;
-                    if s.active_runtime_id.is_none() {
-                        s.active_runtime_id = Some(rec.id.clone());
-                        let _ = task_ctx.db.save_settings(&s);
-                    }
+                    s.active_runtime_id = Some(rec.id.clone());
+                    let _ = task_ctx.db.save_settings(&s);
+                    s.old_runtimes_to_keep
+                };
+                if let Err(e) =
+                    bibulm_runtime::prune_old_runtimes(&task_ctx.db, &rec, keep_old, &in_use)
+                {
+                    task_ctx
+                        .supervisor
+                        .push_log("WARN", "LINK", format!("Failed to prune old runtimes: {e}"))
+                        .await;
                 }
                 task_ctx
                     .supervisor

@@ -11,7 +11,9 @@ use bibulm_models::{
     delete_local_model, get_hf_model_detail, scan_local_models_with_external,
     search_hf_gguf_models,
 };
-use bibulm_runtime::{build_llama_server_args, format_cli_preview};
+use bibulm_runtime::{
+    build_editable_llama_args, build_llama_server_args, format_cli_args, format_cli_preview,
+};
 use std::path::PathBuf;
 use tauri::State;
 
@@ -156,6 +158,15 @@ pub async fn preview_llama_cli(
 
     let args = build_llama_server_args(&config, "127.0.0.1", 51000);
     Ok(format_cli_preview(server_exe.as_deref(), &args))
+}
+
+#[tauri::command]
+pub async fn format_llama_cli_args(config: LoadConfig) -> Result<String, String> {
+    if let Some(raw) = config.custom_cli_args {
+        return Ok(raw);
+    }
+    let args = build_editable_llama_args(&config);
+    Ok(format_cli_args(&args))
 }
 
 #[tauri::command]
