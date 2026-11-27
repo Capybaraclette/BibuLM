@@ -148,6 +148,7 @@ where
     if let Some(ref b) = bench_exe {
         ensure_executable_permissions(b);
     }
+    clear_macos_quarantine(&install_dir, true);
 
     let size_bytes = dir_size_bytes(&install_dir);
     let record = InstalledRuntimeRecord {
@@ -198,8 +199,14 @@ pub fn register_custom_runtime(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let bench_exe = find_executable(&install_dir, &["llama-bench.exe", "llama-bench"])
-        .map(|p| p.to_string_lossy().into_owned());
+    ensure_executable_permissions(&server_exe);
+    clear_macos_quarantine(&server_exe, false);
+    let bench_exe = find_executable(&install_dir, &["llama-bench.exe", "llama-bench"]).map(|p| {
+        ensure_executable_permissions(&p);
+        clear_macos_quarantine(&p, false);
+        p.to_string_lossy().into_owned()
+    });
+    clear_macos_quarantine_dylibs(&install_dir);
     let id = format!("custom-{}", &Uuid::new_v4().to_string()[..8]);
 
     let record = InstalledRuntimeRecord {
@@ -389,6 +396,7 @@ fn extract_targz_safely(archive_path: &Path, dest_dir: &Path) -> Result<(), Inst
             if let Some(parent) = out_path.parent() {
                 fs::create_dir_all(parent)?;
             }
+            let _ = fs::remove_file(&out_path);
             let mut out_file = File::create(&out_path)?;
             io::copy(&mut entry, &mut out_file)?;
             #[cfg(unix)]
@@ -464,12 +472,25 @@ fn is_safe_symlink_target(rel_link: &Path, target: &Path) -> bool {
 fn extract_zip_safely(zip_path: &Path, dest_dir: &Path) -> Result<(), InstallerError> {
     let file = File::open(zip_path)?;
     let mut archive = ZipArchive::new(file)?;
+    let mut deferred_symlinks: Vec<(PathBuf, PathBuf)> = Vec::new();
+
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
         let Some(enclosed) = entry.enclosed_name() else {
             continue;
         };
         if !is_safe_relative_path(&enclosed) {
+            continue;
+        }
+        let unix_mode = entry.unix_mode();
+        if unix_mode.is_some_and(|m| (m & 0o170000) == 0o120000) {
+            let mut target_str = String::new();
+            if io::Read::read_to_string(&mut entry, &mut target_str).is_ok() {
+                let target_buf = PathBuf::from(target_str.trim_end_matches('\0'));
+                if is_safe_symlink_target(&enclosed, &target_buf) {
+                    deferred_symlinks.push((enclosed, target_buf));
+                }
+            }
             continue;
         }
         let out_path = dest_dir.join(&enclosed);
@@ -479,11 +500,67 @@ fn extract_zip_safely(zip_path: &Path, dest_dir: &Path) -> Result<(), InstallerE
             if let Some(parent) = out_path.parent() {
                 fs::create_dir_all(parent)?;
             }
+            let _ = fs::remove_file(&out_path);
             let mut out_file = File::create(&out_path)?;
             io::copy(&mut entry, &mut out_file)?;
+            #[cfg(unix)]
+            if let Some(mode) = unix_mode
+                && (mode & 0o777) != 0
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&out_path, fs::Permissions::from_mode(mode & 0o777));
+            }
         }
     }
+
+    #[cfg(unix)]
+    for (rel, target) in deferred_symlinks {
+        let dst = dest_dir.join(&rel);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let _ = fs::remove_file(&dst);
+        std::os::unix::fs::symlink(&target, &dst)?;
+    }
+
+    #[cfg(not(unix))]
+    let _ = deferred_symlinks;
+
     Ok(())
+}
+
+/// Removes macOS Gatekeeper quarantine attributes (`com.apple.quarantine`) so downloaded or
+/// user-supplied `llama-server` binaries and `.dylib` libraries can launch without Gatekeeper blocks.
+fn clear_macos_quarantine(path: &Path, recursive: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("/usr/bin/xattr");
+        if recursive {
+            cmd.args(["-dr", "com.apple.quarantine"]);
+        } else {
+            cmd.args(["-d", "com.apple.quarantine"]);
+        }
+        let _ = cmd.arg(path).status();
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (path, recursive);
+}
+
+fn clear_macos_quarantine_dylibs(dir: &Path) {
+    #[cfg(target_os = "macos")]
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("dylib"))
+            {
+                clear_macos_quarantine(&p, false);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = dir;
 }
 
 fn ensure_executable_permissions(path: &Path) {

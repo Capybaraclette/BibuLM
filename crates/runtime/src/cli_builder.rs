@@ -459,7 +459,13 @@ pub fn format_cli_args(args: &[String]) -> String {
 pub fn format_cli_preview(server_exe: Option<&Path>, args: &[String]) -> String {
     let exe = server_exe
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "llama-server.exe".to_string());
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                "llama-server.exe".to_string()
+            } else {
+                "llama-server".to_string()
+            }
+        });
     let mut parts = Vec::with_capacity(args.len() + 1);
     parts.push(quote_arg(&exe));
     for a in args {

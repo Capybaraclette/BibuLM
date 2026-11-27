@@ -57,10 +57,13 @@ function formatPlatformLabel(raw?: string | null): string {
   if (low.includes('linux') && (low.includes('aarch64') || low.includes('arm64'))) {
     return 'Linux ARM64';
   }
-  if (low.includes('macos') && (low.includes('aarch64') || low.includes('arm64'))) {
+  if (
+    (low.includes('macos') || low.includes('darwin')) &&
+    (low.includes('aarch64') || low.includes('arm64'))
+  ) {
     return 'macOS arm64';
   }
-  if (low.includes('macos')) return 'macOS x64';
+  if (low.includes('macos') || low.includes('darwin')) return 'macOS x64';
   return raw;
 }
 
@@ -243,10 +246,12 @@ export const RuntimeView: React.FC<RuntimeViewProps> = ({
   };
 
   const handleAddCustom = async () => {
+    const isWindows =
+      typeof navigator !== 'undefined' && navigator.userAgent.toLowerCase().includes('windows');
     const selected = await open({
       multiple: false,
-      title: 'Select custom llama-server.exe',
-      filters: [{ name: 'Executable', extensions: ['exe'] }],
+      title: isWindows ? 'Select custom llama-server.exe' : 'Select custom llama-server binary',
+      ...(isWindows ? { filters: [{ name: 'Executable', extensions: ['exe'] }] } : {}),
     });
     if (typeof selected === 'string') {
       try {

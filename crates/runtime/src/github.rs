@@ -343,12 +343,11 @@ pub fn categorize_platform_assets(
             continue;
         }
 
-        // 5. macOS Apple Silicon / Intel Metal builds
-        if matches!(platform, TargetPlatform::MacosArm64 | TargetPlatform::MacosX64)
-            && !low.contains("-cpu-")
-        {
-            variants.push(RuntimeBackendVariant {
-                id: format!("{tag}-metal"),
+        // 5. macOS Apple Silicon Metal builds (official arm64 builds embed Metal; x64 builds have GGML_METAL=OFF)
+        if platform == TargetPlatform::MacosArm64 && !low.contains("-cpu-") {
+            let id = format!("{tag}-metal");
+            let variant = RuntimeBackendVariant {
+                id: id.clone(),
                 tag: tag.to_string(),
                 backend: "metal".to_string(),
                 display_name: format!("Metal llama.cpp ({plat_label})"),
@@ -358,7 +357,8 @@ pub fn categorize_platform_assets(
                 total_size_bytes: asset.size_bytes,
                 compatible: true,
                 recommended: false,
-            });
+            };
+            insert_or_prefer_targz(&mut variants, variant, &low);
             continue;
         }
 
@@ -368,11 +368,14 @@ pub fn categorize_platform_assets(
             || low.contains("-avx2-")
             || low.contains("-avx-")
             || low.contains("-noavx-");
-        let is_linux_or_arm_default = matches!(
+        let is_os_cpu_default = matches!(
             platform,
-            TargetPlatform::LinuxX64 | TargetPlatform::LinuxArm64 | TargetPlatform::WinArm64
+            TargetPlatform::LinuxX64
+                | TargetPlatform::LinuxArm64
+                | TargetPlatform::WinArm64
+                | TargetPlatform::MacosX64
         );
-        if is_explicit_cpu || is_linux_or_arm_default {
+        if is_explicit_cpu || is_os_cpu_default {
             let (backend, label, compat) = if low.contains("-avx512-") {
                 (
                     "cpu-avx512".to_string(),
@@ -385,7 +388,7 @@ pub fn categorize_platform_assets(
                     format!("CPU AVX2 llama.cpp ({plat_label})"),
                     hw.has_avx2,
                 )
-            } else if low.contains("-cpu-") || is_linux_or_arm_default {
+            } else if low.contains("-cpu-") || is_os_cpu_default {
                 (
                     "cpu".to_string(),
                     format!("CPU llama.cpp ({plat_label})"),
@@ -398,18 +401,23 @@ pub fn categorize_platform_assets(
                     true,
                 )
             };
-            variants.push(RuntimeBackendVariant {
+            let variant = RuntimeBackendVariant {
                 id: format!("{tag}-{backend}"),
                 tag: tag.to_string(),
                 backend,
                 display_name: label,
-                description: "CPU-only llama.cpp engine (universal fallback)".to_string(),
+                description: if platform == TargetPlatform::MacosX64 {
+                    "CPU-only llama.cpp engine (Intel macOS)".to_string()
+                } else {
+                    "CPU-only llama.cpp engine (universal fallback)".to_string()
+                },
                 cuda_version: None,
                 assets: vec![asset.clone()],
                 total_size_bytes: asset.size_bytes,
                 compatible: compat,
                 recommended: false,
-            });
+            };
+            insert_or_prefer_targz(&mut variants, variant, &low);
         }
     }
 
@@ -425,6 +433,27 @@ pub fn categorize_platform_assets(
     });
 
     variants
+}
+
+/// Inserts `variant` unless an entry with the same `id` already exists; if so, replaces it only
+/// when the new archive is a `.tar.gz`/`.tgz` (which preserves Unix symlinks/permissions) over a `.zip`.
+fn insert_or_prefer_targz(
+    variants: &mut Vec<RuntimeBackendVariant>,
+    variant: RuntimeBackendVariant,
+    lower_asset_name: &str,
+) {
+    let is_targz = lower_asset_name.ends_with(".tar.gz") || lower_asset_name.ends_with(".tgz");
+    if let Some(existing) = variants.iter_mut().find(|v| v.id == variant.id) {
+        let existing_is_targz = existing.assets.first().is_some_and(|a| {
+            let l = a.name.to_ascii_lowercase();
+            l.ends_with(".tar.gz") || l.ends_with(".tgz")
+        });
+        if is_targz && !existing_is_targz {
+            *existing = variant;
+        }
+        return;
+    }
+    variants.push(variant);
 }
 
 fn mark_recommended_variant(variants: &mut [RuntimeBackendVariant], hw: &HardwareMatchContext) {
@@ -642,9 +671,27 @@ mod tests {
         assert_eq!(win_arm.len(), 1);
         assert_eq!(win_arm[0].backend, "cpu");
 
-        let mac_arm = categorize_platform_assets("b5200", &assets, &hw, TargetPlatform::MacosArm64);
+        let mut mac_assets = assets.clone();
+        mac_assets.push(ReleaseAssetInfo {
+            name: "llama-b5200-bin-macos-x64.tar.gz".into(),
+            download_url: "https://example/mac-x64.tar.gz".into(),
+            size_bytes: 24_000_000,
+        });
+        mac_assets.push(ReleaseAssetInfo {
+            name: "llama-b5200-bin-macos-arm64.zip".into(),
+            download_url: "https://example/mac-arm64.zip".into(),
+            size_bytes: 26_000_000,
+        });
+
+        let mac_arm = categorize_platform_assets("b5200", &mac_assets, &hw, TargetPlatform::MacosArm64);
         assert_eq!(mac_arm.len(), 1);
         assert_eq!(mac_arm[0].backend, "metal");
         assert!(mac_arm[0].recommended);
+        assert!(mac_arm[0].assets[0].name.ends_with(".tar.gz"));
+
+        let mac_x64 = categorize_platform_assets("b5200", &mac_assets, &hw, TargetPlatform::MacosX64);
+        assert_eq!(mac_x64.len(), 1);
+        assert_eq!(mac_x64[0].backend, "cpu");
+        assert!(mac_x64[0].recommended);
     }
 }

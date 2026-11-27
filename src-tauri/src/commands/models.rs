@@ -206,7 +206,41 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
         }
         Ok(())
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        if p.is_file() {
+            std::process::Command::new("open")
+                .arg("-R")
+                .arg(&p)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        } else {
+            let dir = if p.is_dir() {
+                p
+            } else {
+                p.parent().map(PathBuf::from).unwrap_or(p)
+            };
+            std::process::Command::new("open")
+                .arg(dir)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let dir = if p.is_dir() {
+            p
+        } else {
+            p.parent().map(PathBuf::from).unwrap_or(p)
+        };
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         let _ = p;
         Ok(())

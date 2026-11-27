@@ -182,7 +182,7 @@ pub async fn load_model_cmd(
         .or_else(|| runtimes.first())
         .cloned()
         .ok_or_else(|| {
-            "No llama.cpp runtime installed. Open the Runtime tab to download an official ggml-org/llama.cpp build or add a custom llama-server.exe."
+            "No llama.cpp runtime installed. Open the Runtime tab to download an official ggml-org/llama.cpp build or add a custom llama-server binary."
                 .to_string()
         })?;
 
