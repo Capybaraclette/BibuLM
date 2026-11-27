@@ -108,11 +108,24 @@ jobs:
           go test ./...
           go build -trimpath -ldflags="-s -w" -o "../../src-tauri/binaries/bibulm-linkd-${{ matrix.target }}${{ matrix.ext }}" .
 
+      - name: Configure macOS runner environment
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          {
+            echo "LC_ALL=en_US.UTF-8"
+            echo "LANG=en_US.UTF-8"
+            echo "CARGO_BUILD_JOBS=4"
+          } >> "$GITHUB_ENV"
+
       - name: Run Rust workspace tests
         run: cargo test --workspace
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install Tauri CLI (prebuilt)
+        run: cargo binstall tauri-cli --version "^2" --no-confirm
 
       - name: Build Tauri bundles (${{ matrix.name }})
         env:
